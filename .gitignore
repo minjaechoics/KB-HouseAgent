@@ -1,0 +1,37 @@
+.env
+.env.*
+!.env.example
+!.env.production.example
+deploy/.htpasswd
+deploy/PRIVATE_ACCESS.txt
+deploy/*.private.env
+*.pem
+*.key
+*.p12
+*.pfx
+__pycache__/
+*.py[cod]
+.pytest*/
+.test_tmp/
+.verify*/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# 운영/생성 데이터는 GitHub 용량 제한과 원천데이터 이용조건 때문에 제외한다.
+data/generated/**
+!data/generated/.gitkeep
+!data/generated/README.md
+data/downloaded/**
+!data/downloaded/.gitkeep
+!data/downloaded/README.md
+*.db
+*.sqlite
+*.sqlite3
+
+# 배포 산출물과 로컬 QA 캡처
+deploy/*.tar.gz
+deploy/*.tgz
+deploy/qa-*.png
+deploy/PRIVATE_ACCESS.txt

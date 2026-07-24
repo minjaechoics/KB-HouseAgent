@@ -1,0 +1,31 @@
+{
+  "version": "rtms_calendar_3month_gbdt_news_v3",
+  "features": [
+    "ret_1",
+    "ret_3",
+    "ret_6",
+    "vol_3",
+    "log_count",
+    "national_ret_1",
+    "month_sin",
+    "month_cos",
+    "group_code"
+  ],
+  "groups": [
+    "apartment",
+    "officetel",
+    "single_multi"
+  ],
+  "trained_rows": 1131,
+  "source_month_min": 202407,
+  "source_month_max": 202607,
+  "training_target_month_max": 202604,
+  "inference_feature_month_max": 202607,
+  "holdout_month_start": 202602,
+  "holdout_monthly_log_return_mae": 0.031995115987732956,
+  "training_sources": [
+    "rtms_apt_trade.csv",
+    "rtms_offi_trade.csv",
+    "rtms_sh_trade.csv"
+  ]
+}

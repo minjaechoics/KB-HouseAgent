@@ -1,0 +1,45 @@
+# ============================================================
+#  청년을 위한 다가구주택 금융 도우미 - Python dependencies
+#  Tested with Python 3.12
+# ============================================================
+
+# --- core data / numeric ---
+numpy>=1.26,<3.0
+pandas>=2.1,<3.0
+scipy>=1.11,<2.0
+openpyxl>=3.1          # read the KHUG .xlsx accident file
+
+# --- machine learning (fraud-risk & recommender models) ---
+scikit-learn>=1.4,<2.0
+xgboost>=2.0
+lightgbm>=4.1
+imbalanced-learn>=0.12  # SMOTE for the imbalanced fraud label
+joblib>=1.3
+
+# --- deep tabular (OPTIONAL, only for the TabNet / MLP experiments) ---
+# torch>=2.2            # uncomment if you want the neural experiments
+# pytorch-tabnet>=4.1
+
+# --- LLM agent (API 기본 / 로컬 선택) ---
+# 서비스 기본은 API 기반. 아래 중 사용하는 provider의 SDK만 설치하면 된다.
+openai>=1.66,<3.0       # OpenAI Responses API (기본, LLM_PROVIDER=openai)
+anthropic>=0.40         # Anthropic API (선택, LLM_PROVIDER=anthropic)
+requests>=2.31          # 외부 API 호출(네이버 지도/카카오/CODEF)
+easycodefpy>=1.0.0      # CODEF 공식 샌드박스/데모/운영 클라이언트
+
+# 로컬 오픈모델(선택, 서비스에는 불필요):
+#   Qwen/Qwen2.5-3B-Instruct — transformers/torch 설치 시 JEONSE_LLM=qwen
+# transformers>=4.44
+# torch>=2.2
+# accelerate>=0.33
+# sentencepiece
+
+# --- utilities ---
+pydantic>=2.5          # typed schemas for property / user records
+tqdm>=4.66
+tabulate>=0.9
+
+# --- web service ---
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.34,<1.0
+pyproj>=3.7,<4.0        # official LOCALDATA EPSG:5174 -> WGS84 conversion

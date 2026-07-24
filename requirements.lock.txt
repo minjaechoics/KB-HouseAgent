@@ -1,0 +1,39 @@
+# ============================================================
+#  검증된 정확한 버전 (Python 3.12.3에서 전체 파이프라인 테스트 통과)
+#  재현이 필요하면: pip install -r requirements.lock.txt
+# ============================================================
+
+# --- core data / numeric ---
+numpy==2.4.4
+pandas==3.0.2
+scipy==1.17.1
+openpyxl==3.1.5
+
+# --- machine learning ---
+scikit-learn==1.8.0
+xgboost==3.3.0
+lightgbm==4.6.0
+imbalanced-learn==0.14.2
+joblib==1.5.3
+
+# --- utilities ---
+pydantic==2.13.4
+tqdm==4.68.4
+tabulate==0.10.0
+
+# --- LLM API (서비스용, 선택) ---
+anthropic==0.40.0        # 또는 openai; 실제 사용 시 최신으로 올려도 무방
+openai==2.45.0
+requests==2.33.1
+easycodefpy==1.0.1
+
+# --- 서버 (선택) ---
+fastapi==0.139.0
+uvicorn==0.51.0
+httpx==0.28.1            # TestClient용
+
+# --- 로컬 LLM (선택, 서비스에는 불필요) ---
+# transformers==4.44.0
+# torch==2.2.0
+# accelerate==0.33.0
+# sentencepiece

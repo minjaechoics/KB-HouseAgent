@@ -1,0 +1,42 @@
+services:
+  app:
+    build:
+      context: .
+    env_file:
+      - path: .env.production
+        required: true
+      - path: deploy/NAVER_KEYS.private.env
+        required: false
+      - path: deploy/TMAP_KEYS.private.env
+        required: false
+      - path: deploy/BRIGHTDATA_KEYS.private.env
+        required: false
+      - path: deploy/RONE_KEYS.private.env
+        required: false
+      - path: deploy/PUBLIC_DATA_KEYS.private.env
+        required: false
+    environment:
+      # KB 약관상 서면 허가/제휴가 확인되기 전에는 내부 조회를 호출하지 않는다.
+      KB_DATA_LICENSED: "false"
+    restart: unless-stopped
+    expose:
+      - "8000"
+    networks:
+      - internal
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
