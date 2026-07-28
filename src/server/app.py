@@ -377,6 +377,16 @@ def report_loader_sprite():
     })
 
 
+@app.get("/assets/youth-home-loader-scene-v2.jpg", include_in_schema=False)
+def report_loader_scene():
+    asset = Path(__file__).with_name("assets") / "youth-home-loader-scene-v2.jpg"
+    if not asset.exists():
+        raise HTTPException(404, "로딩 이미지를 준비하지 못했습니다.")
+    return FileResponse(asset, media_type="image/jpeg", headers={
+        "Cache-Control": "public, max-age=31536000, immutable",
+    })
+
+
 @app.post("/session")
 def create_session(body: SessionCreate):
     sid = uuid.uuid4().hex

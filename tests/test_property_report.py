@@ -275,7 +275,7 @@ def test_gui_and_docker_include_integrated_senior_deposit_evidence():
         "기존 임차보증금 · 보수 P95", "선택 매물의 내 보증금",
         "건축HUB 정확주소", "어떻게 추정되었나요?",
         "금융상품 미적용", "누적 순자산 (만원)", "나이 (세)",
-        "hedgehog-stage", "KB 금융상품",
+        "youth-loader-stage", "KB 금융상품",
     ):
         assert value in gui
     assert "data/processed/owner_asset_ratio/buildings.csv" in dockerfile

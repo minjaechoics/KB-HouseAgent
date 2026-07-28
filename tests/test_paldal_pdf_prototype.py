@@ -64,13 +64,12 @@ def test_paldal_jeonse_rows_are_all_scored_and_use_reference_addresses():
     assert distinct_addresses >= 100
 
 
-def test_gui_removes_old_pdf_wording_and_uses_js_hedgehog_loader():
+def test_gui_removes_old_pdf_wording_and_uses_stable_youth_loader():
     root = Path(__file__).parents[1]
     gui = (root / "src/server/gui.html").read_text(encoding="utf-8")
     assert "사용자 제공 PDF" not in gui
     assert "전세 보증사고 위험도 분석 대상 아님" not in gui
-    assert "hedgehog-stage" in gui
-    assert "requestAnimationFrame(frame)" in gui
-    assert "둥근 안경을 쓴 고슴도치" in gui
-    assert "/assets/youth-home-loader-sprite-v1.png" not in gui
-    assert (root / "src/server/assets/youth-home-loader-sprite-v1.png").stat().st_size > 100_000
+    assert "youth-loader-stage" in gui
+    assert "/assets/youth-home-loader-scene-v2.jpg" in gui
+    assert "청년이 KB 금융상품을 활용해 원하는 집으로 달려가는 모습" in gui
+    assert (root / "src/server/assets/youth-home-loader-scene-v2.jpg").stat().st_size > 100_000
