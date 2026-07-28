@@ -109,6 +109,7 @@ class PropertyReportService:
             os.environ.get("REPORT_ANALYSIS_CACHE_TTL_SECONDS", "3600")
         )
         self._risk_explanation_cache: dict[str, tuple[float, dict]] = {}
+        self._metric_explanation_cache: dict[str, tuple[float, dict]] = {}
 
     def _base_analysis(self, prop: dict) -> tuple[dict, bool]:
         """Slow property-only lookups run concurrently and are cached."""
@@ -854,6 +855,316 @@ class PropertyReportService:
                     fallback["reasons"][3], *reasons
                 ][:4]
             return {**fallback, **value, "strategy": "llm_structured", "score": score}
+        except Exception:
+            return fallback
+
+    @staticmethod
+    def _metric_facts(report: dict) -> list[dict]:
+        """Collect the important numbers shown in the UI for one batch explanation."""
+        facts: list[dict] = []
+
+        def money(value) -> str:
+            return f"{float(value or 0):,.0f}만원"
+
+        def pct(value) -> str:
+            return f"{float(value or 0) * 100:.1f}%"
+
+        def score(value) -> str:
+            return f"{float(value or 0):.0f}점"
+
+        def add(metric_id: str, section: str, label: str, value,
+                display: str, fallback: str, tone: str = "neutral") -> None:
+            if value is None:
+                return
+            facts.append({
+                "id": metric_id, "section": section, "label": label,
+                "value": float(value), "display_value": display,
+                "fallback_explanation": fallback, "tone": tone,
+            })
+
+        budget = report.get("budget") or {}
+        funding = budget.get("funding") or {}
+        add(
+            "funding.required", "budget", "계약에 필요한 금액",
+            funding.get("required_capital_manwon"),
+            money(funding.get("required_capital_manwon")),
+            "이 집을 계약하기 위해 처음 확보해야 하는 전체 금액입니다.",
+        )
+        add(
+            "funding.cash", "budget", "현재 투입 가능 예산",
+            funding.get("cash_used_manwon"),
+            money(funding.get("cash_used_manwon")),
+            "대출을 제외하고 지금 계약에 넣을 수 있는 자기자금입니다.",
+            "positive",
+        )
+        initial_gap = funding.get("initial_cash_shortfall_manwon")
+        if initial_gap is None:
+            initial_gap = funding.get("funding_gap_manwon")
+        add(
+            "funding.initial_gap", "budget", "대출 전 부족액",
+            initial_gap, money(initial_gap),
+            (
+                "추가 대출이나 별도 자금으로 채워야 계약할 수 있는 금액입니다."
+                if float(initial_gap or 0) > 0
+                else "현재 자기자금만으로 초기 계약금액을 충족한다는 뜻입니다."
+            ),
+            "warning" if float(initial_gap or 0) > 0 else "positive",
+        )
+        add(
+            "funding.monthly_gap", "budget", "월 예산 초과액",
+            funding.get("monthly_budget_shortfall_manwon"),
+            money(funding.get("monthly_budget_shortfall_manwon")),
+            "매달 감당 가능한 예산보다 주거비가 더 큰 부분입니다.",
+            "warning" if float(
+                funding.get("monthly_budget_shortfall_manwon") or 0
+            ) > 0 else "positive",
+        )
+
+        forecast = report.get("forecast") or {}
+        annual = forecast.get("annual_growth_rate")
+        add(
+            "market.annual_growth", "budget", "연간 집값 전망",
+            annual, pct(annual),
+            "과거 실거래 흐름으로 추정한 연간 가격 변화의 중심값입니다.",
+            "positive" if float(annual or 0) > 0 else
+            "warning" if float(annual or 0) < 0 else "neutral",
+        )
+        history = forecast.get("price_history") or {}
+        add(
+            "market.latest_price", "budget", "최근 실거래 월평균",
+            history.get("latest_price_manwon"),
+            money(history.get("latest_price_manwon")),
+            "같은 지역·주택유형·거래유형에서 신고된 최근 월평균입니다.",
+        )
+        add(
+            "market.period_change", "budget", "표시기간 실거래 변화",
+            history.get("change_period"), pct(history.get("change_period")),
+            "그래프 시작 시점과 최근 시점의 실거래 월평균 차이입니다.",
+        )
+
+        simulation = report.get("probabilistic_simulation") or {}
+        base = simulation.get("base") or {}
+        terminal = base.get("terminal_net_worth") or {}
+        horizon = int(simulation.get("horizon_years") or 10)
+        add(
+            "assets.net_worth_p50", "assets",
+            f"{horizon}년 후 순자산 중앙값", terminal.get("p50"),
+            money(terminal.get("p50")),
+            "미래 경로의 절반은 이보다 높고 절반은 낮은 중심 결과입니다.",
+        )
+        add(
+            "assets.net_worth_p10", "assets", "순자산 하위 경로",
+            terminal.get("p10"), money(terminal.get("p10")),
+            "불리한 미래 경로에서 예상되는 보수적인 순자산 수준입니다.",
+            "warning",
+        )
+        add(
+            "assets.net_worth_p90", "assets", "순자산 상위 경로",
+            terminal.get("p90"), money(terminal.get("p90")),
+            "유리한 미래 경로에서 기대할 수 있는 상단 순자산 수준입니다.",
+            "positive",
+        )
+        add(
+            "assets.cash_depletion", "assets", "현금 고갈 확률",
+            base.get("cash_depletion_probability"),
+            pct(base.get("cash_depletion_probability")),
+            "계산 기간 중 현금성 자산이 바닥난 미래 경로의 비중입니다.",
+            "warning",
+        )
+        add(
+            "assets.repayment_distress", "assets", "상환곤란 확률",
+            base.get("repayment_distress_probability"),
+            pct(base.get("repayment_distress_probability")),
+            "대출 상환 부담이 연속해서 감당 한도를 넘은 경로의 비중입니다.",
+            "warning",
+        )
+        add(
+            "assets.cvar", "assets", "최악 경로 평균 변화",
+            base.get("cvar_5_terminal_change_manwon"),
+            money(base.get("cvar_5_terminal_change_manwon")),
+            "가장 불리한 미래들을 모아 계산한 평균 자산 변화입니다.",
+            "warning",
+        )
+
+        contract = report.get("contract_safety") or {}
+        ratio = contract.get("jeonse_ratio") or {}
+        ratios = ratio.get("ratios") or {}
+        post = ratios.get("post_contract_ratio") or {}
+        threshold = ratio.get("threshold_probabilities") or {}
+        add(
+            "contract.ratio_p50", "contract", "계약 후 전세가율 중앙값",
+            post.get("p50"), pct(post.get("p50")),
+            "선순위 보증금과 내 보증금을 건물가치로 나눈 중심 추정치입니다.",
+            "warning" if float(post.get("p50") or 0) >= .6 else "positive",
+        )
+        add(
+            "contract.ratio_p90", "contract", "계약 후 전세가율 상단",
+            post.get("p90"), pct(post.get("p90")),
+            "불리한 경우까지 고려한 높은 쪽 전세가율 추정치입니다.",
+            "warning",
+        )
+        add(
+            "contract.over_80", "contract", "위험 경계 초과 확률",
+            threshold.get("post_contract_over_0_8"),
+            pct(threshold.get("post_contract_over_0_8")),
+            "보증금 부담이 위험 경계선을 넘는 미래 경로의 비중입니다.",
+            "warning",
+        )
+        add(
+            "contract.over_100", "contract", "건물가치 초과 확률",
+            threshold.get("post_contract_over_1_0"),
+            pct(threshold.get("post_contract_over_1_0")),
+            "보증금 부담이 추정 건물가치보다 커지는 경로의 비중입니다.",
+            "warning",
+        )
+        owner = contract.get("owner_asset_ratio") or {}
+        owner_estimate = owner.get("estimate") or {}
+        owner_assets = owner_estimate.get("estimated_owner_total_assets") or {}
+        owner_ratio = owner_estimate.get(
+            "target_deposit_to_total_assets_ratio") or {}
+        add(
+            "contract.owner_assets_p50", "contract", "추정 집주인 총자산",
+            owner_assets.get("p50"), money(owner_assets.get("p50")),
+            "특정 집주인 조회값이 아니라 통계 자료로 추정한 중심값입니다.",
+        )
+        add(
+            "contract.deposit_asset_ratio", "contract",
+            "전세금 대비 추정 총자산 비율",
+            owner_ratio.get("p50"), pct(owner_ratio.get("p50")),
+            "내 보증금이 추정 총자산에서 차지하는 비중의 중심값입니다.",
+            "warning",
+        )
+        senior = contract.get("senior_deposit") or {}
+        senior_support = senior.get("decision_support") or {}
+        senior_p95 = senior_support.get(
+            "existing_deposit_conservative_p95_won")
+        add(
+            "contract.senior_p95", "contract", "기존 보증금 보수 추정",
+            (float(senior_p95) / 10_000 if senior_p95 is not None else None),
+            money(float(senior_p95 or 0) / 10_000),
+            "다른 임차인이 먼저 돌려받을 수 있는 보증금의 보수적 추정입니다.",
+            "warning",
+        )
+
+        safety = report.get("safety") or {}
+        add(
+            "safety.score", "safety", "치안시설 점수",
+            safety.get("safety_score"), score(safety.get("safety_score")),
+            "주변 공공 치안시설의 거리와 개수를 합친 비교용 점수입니다.",
+        )
+        convenience = report.get("convenience") or {}
+        add(
+            "living.score", "living", "생활편의 점수",
+            convenience.get("convenience_score"),
+            score(convenience.get("convenience_score")),
+            "주변 병원·약국·마트·음식점 등 접근성을 합친 비교용 점수입니다.",
+        )
+        final = report.get("final_assessment") or {}
+        add(
+            "final.score", "final", "최종 의사결정 점수",
+            final.get("score"), score(final.get("score")),
+            "자금·시장·치안·편의·계약안전을 함께 반영한 비교 점수입니다.",
+        )
+        return facts
+
+    def explain_metrics(self, report: dict) -> dict:
+        """Explain all visible key metrics with one grounded LLM call."""
+        facts = self._metric_facts(report)
+        fallback_items = [{
+            "id": item["id"], "section": item["section"],
+            "label": item["label"], "value": item["display_value"],
+            "explanation": item["fallback_explanation"],
+            "tone": item["tone"],
+        } for item in facts]
+        fallback = {
+            "strategy": "deterministic_fallback",
+            "items": fallback_items,
+        }
+        if not facts:
+            return fallback
+        if (
+            not self.llm
+            or not getattr(self.llm, "supports_agentic_calls", False)
+        ):
+            return fallback
+        cache_key = json.dumps(
+            facts, ensure_ascii=False, sort_keys=True, default=str
+        )
+        now = time.monotonic()
+        with self._analysis_cache_lock:
+            cached = self._metric_explanation_cache.get(cache_key)
+            if cached and now - cached[0] < self._analysis_cache_ttl_seconds:
+                value = copy.deepcopy(cached[1])
+                value["cache_hit"] = True
+                return value
+        schema = {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "items": {
+                    "type": "array", "maxItems": 32,
+                    "items": {
+                        "type": "object", "additionalProperties": False,
+                        "properties": {
+                            "id": {"type": "string"},
+                            "explanation": {"type": "string"},
+                            "tone": {
+                                "type": "string",
+                                "enum": ["positive", "warning", "neutral"],
+                            },
+                        },
+                        "required": ["id", "explanation", "tone"],
+                    },
+                },
+            },
+            "required": ["items"],
+        }
+        try:
+            value = self.llm.analyze_json(
+                operation="report.metric_explanations",
+                system=(
+                    "너는 청년 주택 리포트의 숫자 해설자다. 입력 facts의 각 id를 "
+                    "한 번씩 그대로 반환한다. 설명은 해당 숫자가 무엇을 뜻하고 "
+                    "사용자가 어떻게 읽어야 하는지만 쉬운 한국어 한 문장으로 쓴다. "
+                    "설명 문장에는 숫자·새 계산·새 사실을 절대 넣지 않는다. "
+                    "예측값과 확률을 확정 사실로 표현하지 않는다. "
+                    "집주인 자산은 실제 조회값이라고 말하지 않는다."
+                ),
+                user=json.dumps({"facts": facts}, ensure_ascii=False),
+                schema=schema, schema_name="report_metric_explanations",
+                max_tokens=1800,
+            ) or {}
+            by_id = {
+                str(item.get("id")): item
+                for item in value.get("items", [])
+                if isinstance(item, dict)
+            }
+            items = []
+            for fallback_item in fallback_items:
+                generated = by_id.get(fallback_item["id"]) or {}
+                explanation = str(
+                    generated.get("explanation") or ""
+                ).strip()[:140]
+                # The displayed value already contains the number. Reject any
+                # generated sentence that introduces another numeric claim.
+                if not explanation or any(ch.isdigit() for ch in explanation):
+                    explanation = fallback_item["explanation"]
+                tone = str(generated.get("tone") or fallback_item["tone"])
+                if tone not in {"positive", "warning", "neutral"}:
+                    tone = fallback_item["tone"]
+                items.append({
+                    **fallback_item,
+                    "explanation": explanation,
+                    "tone": tone,
+                })
+            result = {
+                "strategy": "llm_structured", "items": items,
+                "cache_hit": False,
+            }
+            with self._analysis_cache_lock:
+                self._metric_explanation_cache[cache_key] = (
+                    now, copy.deepcopy(result)
+                )
+            return result
         except Exception:
             return fallback
 

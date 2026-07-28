@@ -239,6 +239,11 @@ class PropertyReportIn(BaseModel):
     lifestyle: Optional[LifestyleSimulationIn] = None
 
 
+class MetricExplanationIn(BaseModel):
+    session_id: str
+    decision_run_id: str = Field(min_length=8, max_length=100)
+
+
 class OptimizationIn(BaseModel):
     session_id: str
     property_ids: Optional[list[str]] = Field(default=None, max_length=120)
@@ -906,7 +911,7 @@ def property_report(body: PropertyReportIn):
     if session is None:
         raise HTTPException(404, "session not found. POST /session first.")
     try:
-        return _property_report.build(
+        result = _property_report.build(
             session["user"], body.property_id,
             assumptions={
                 "horizon_years": body.horizon_years,
@@ -931,6 +936,10 @@ def property_report(body: PropertyReportIn):
             },
             session_id=body.session_id,
         )
+        # The metric explanation is requested after the main report is already
+        # visible. Keep only the latest report in this prototype session.
+        session["last_property_report"] = result
+        return result
     except KeyError as exc:
         _audit.fail_latest_running(
             session_id=body.session_id, property_id=body.property_id, error=exc)
@@ -940,6 +949,21 @@ def property_report(body: PropertyReportIn):
             session_id=body.session_id, property_id=body.property_id, error=exc)
         logger.exception("property report failed")
         raise HTTPException(400, "매물 분석을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.") from exc
+
+
+@app.post("/api/properties/report/metric-explanations")
+def property_report_metric_explanations(body: MetricExplanationIn):
+    """Explain the latest report's important numbers in one batched LLM call."""
+    session = _SESSIONS.get(body.session_id)
+    if session is None:
+        raise HTTPException(404, "session not found. POST /session first.")
+    report = session.get("last_property_report")
+    if (
+        not isinstance(report, dict)
+        or str(report.get("decision_run_id") or "") != body.decision_run_id
+    ):
+        raise HTTPException(409, "latest property report changed")
+    return _property_report.explain_metrics(report)
 
 
 @app.post("/api/properties/owner-asset-ratio")

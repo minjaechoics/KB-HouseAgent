@@ -154,6 +154,77 @@ def test_gui_renders_llm_long_text_and_risk_explanation_safely():
     assert "role==='ai'?richLlmText(text):esc(text)" in gui
 
 
+class StructuredMetricLLM:
+    supports_agentic_calls = True
+
+    def analyze_json(self, **kwargs):
+        assert kwargs["operation"] == "report.metric_explanations"
+        facts = json.loads(kwargs["user"])["facts"]
+        return {
+            "items": [{
+                "id": item["id"],
+                "explanation": "현재 선택의 의미를 비교해서 읽어야 하는 값입니다.",
+                "tone": item["tone"],
+            } for item in facts]
+        }
+
+
+def test_metric_explanations_use_one_grounded_llm_batch():
+    service = PropertyReportService(llm=StructuredMetricLLM())
+    report = {
+        "budget": {"funding": {
+            "required_capital_manwon": 10000,
+            "cash_used_manwon": 4000,
+            "initial_cash_shortfall_manwon": 6000,
+            "monthly_budget_shortfall_manwon": 20,
+        }},
+        "forecast": {
+            "annual_growth_rate": .02,
+            "price_history": {
+                "latest_price_manwon": 12000,
+                "change_period": .03,
+            },
+        },
+        "probabilistic_simulation": {
+            "horizon_years": 10,
+            "base": {
+                "terminal_net_worth": {
+                    "p10": 3000, "p50": 9000, "p90": 18000,
+                },
+                "cash_depletion_probability": .1,
+                "repayment_distress_probability": .2,
+                "cvar_5_terminal_change_manwon": -2500,
+            },
+        },
+        "contract_safety": {},
+        "safety": {"safety_score": 65},
+        "convenience": {"convenience_score": 72},
+        "final_assessment": {"score": 61},
+    }
+    result = service.explain_metrics(report)
+
+    assert result["strategy"] == "llm_structured"
+    assert len(result["items"]) >= 10
+    assert {item["section"] for item in result["items"]} >= {
+        "budget", "assets", "safety", "living", "final",
+    }
+    assert all(not any(ch.isdigit() for ch in item["explanation"])
+               for item in result["items"])
+
+
+def test_gui_loads_metric_explanations_after_main_report():
+    gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
+        encoding="utf-8")
+    for token in (
+        "/api/properties/report/metric-explanations",
+        "loadMetricExplanations",
+        "injectMetricExplanations",
+        "AI 숫자 해설",
+        "metric-ai-panel",
+    ):
+        assert token in gui
+
+
 def test_senior_deposit_integration_marks_non_registry_input_low_confidence():
     import sqlite3
 
