@@ -1,5 +1,5 @@
 {
-  "version": "rtms_calendar_3month_gbdt_news_v3",
+  "version": "rtms_walkforward_conformal_v4",
   "features": [
     "ret_1",
     "ret_3",
@@ -22,7 +22,101 @@
   "training_target_month_max": 202604,
   "inference_feature_month_max": 202607,
   "holdout_month_start": 202602,
-  "holdout_monthly_log_return_mae": 0.031995115987732956,
+  "holdout_monthly_log_return_mae": 0.03231794792113102,
+  "walk_forward": {
+    "method": "expanding_window_walk_forward",
+    "folds": [
+      {
+        "validation_month": 202511,
+        "train_rows": 744,
+        "test_rows": 75
+      },
+      {
+        "validation_month": 202512,
+        "train_rows": 819,
+        "test_rows": 75
+      },
+      {
+        "validation_month": 202601,
+        "train_rows": 894,
+        "test_rows": 74
+      },
+      {
+        "validation_month": 202602,
+        "train_rows": 968,
+        "test_rows": 74
+      },
+      {
+        "validation_month": 202603,
+        "train_rows": 1042,
+        "test_rows": 74
+      },
+      {
+        "validation_month": 202604,
+        "train_rows": 1116,
+        "test_rows": 15
+      }
+    ],
+    "validation_months": [
+      202511,
+      202512,
+      202601,
+      202602,
+      202603,
+      202604
+    ],
+    "model_metrics": {
+      "seasonal_naive": {
+        "mae_monthly_log_return": 0.05909409198981672,
+        "mape_with_0_1pct_floor": 4.143076203516951,
+        "direction_accuracy": 0.24289405684754523,
+        "rows": 387
+      },
+      "ridge": {
+        "mae_monthly_log_return": 0.03143325222016406,
+        "mape_with_0_1pct_floor": 1.3843162849290676,
+        "direction_accuracy": 0.6020671834625323,
+        "rows": 387
+      },
+      "hist_gbdt": {
+        "mae_monthly_log_return": 0.030818629659673892,
+        "mape_with_0_1pct_floor": 2.066152092487889,
+        "direction_accuracy": 0.6227390180878553,
+        "rows": 387
+      },
+      "lightgbm": {
+        "mae_monthly_log_return": 0.03043912387528749,
+        "mape_with_0_1pct_floor": 1.9844401848364703,
+        "direction_accuracy": 0.6227390180878553,
+        "rows": 387
+      }
+    },
+    "selected_base_model": "lightgbm",
+    "lightgbm_available": true,
+    "conformal": {
+      "method": "rolling_oof_conformalized_quantile_regression",
+      "sample_count": 387,
+      "qhat_80_monthly_log_return": 0.014924881070331325,
+      "qhat_95_monthly_log_return": 0.04501227482731525,
+      "raw_interval_coverage": 0.58656330749354,
+      "empirical_coverage_80": 0.8036175710594315,
+      "empirical_coverage_95": 0.9534883720930233
+    },
+    "tft": {
+      "status": "skipped",
+      "reason": "TFT requires at least 5,000 supervised rows and 36 observed months; a simpler validated model is safer for the current panel"
+    }
+  },
+  "conformal": {
+    "method": "rolling_oof_conformalized_quantile_regression",
+    "sample_count": 387,
+    "qhat_80_monthly_log_return": 0.014924881070331325,
+    "qhat_95_monthly_log_return": 0.04501227482731525,
+    "raw_interval_coverage": 0.58656330749354,
+    "empirical_coverage_80": 0.8036175710594315,
+    "empirical_coverage_95": 0.9534883720930233
+  },
+  "news_numeric_policy": "live LLM news labels are qualitative evidence only; numeric price effects require a lagged historical news feature that improves walk-forward validation",
   "training_sources": [
     "rtms_apt_trade.csv",
     "rtms_offi_trade.csv",

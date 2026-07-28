@@ -10,7 +10,9 @@ scipy>=1.11,<2.0
 openpyxl>=3.1          # read the KHUG .xlsx accident file
 
 # --- machine learning (fraud-risk & recommender models) ---
-scikit-learn>=1.4,<2.0
+# 모델 산출물은 1.8.0으로 학습했다. 1.9의 pickle 내부 모듈 변경과
+# 교차 버전 역직렬화 실패를 막기 위해 런타임 상한을 고정한다.
+scikit-learn>=1.8,<1.9
 xgboost>=2.0
 lightgbm>=4.1
 imbalanced-learn>=0.12  # SMOTE for the imbalanced fraud label
@@ -38,6 +40,7 @@ easycodefpy>=1.0.0      # CODEF 공식 샌드박스/데모/운영 클라이언�
 pydantic>=2.5          # typed schemas for property / user records
 tqdm>=4.66
 tabulate>=0.9
+PyYAML>=6.0            # source/schema mappings for owner-asset-ratio pipeline
 
 # --- web service ---
 fastapi>=0.115,<1.0

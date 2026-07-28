@@ -146,11 +146,14 @@ class NewsSignalTool:
             try:
                 response = self.session.get(
                     self.url, headers=self._headers(),
-                    params={"query": query, "display": 30, "sort": "date"},
+                    # 리포트 한 번에 30개 요약을 LLM에 넘기면 모바일 첫 요청이
+                    # 30초 이상 걸렸다. 최신 8개면 지역 호재·악재 판정에 충분하고
+                    # 토큰·지연을 크게 줄일 수 있다.
+                    params={"query": query, "display": 8, "sort": "date"},
                     timeout=self.timeout,
                 )
                 response.raise_for_status()
-                return response.json().get("items", [])[:30], \
+                return response.json().get("items", [])[:8], \
                     f"naver_news_search_{self.api_kind}", None
             except Exception as exc:
                 naver_error = f"{type(exc).__name__}: {exc}"[:200]
@@ -163,7 +166,7 @@ class NewsSignalTool:
         response.raise_for_status()
         root = ET.fromstring(response.content)
         items = []
-        for node in root.findall(".//item")[:30]:
+        for node in root.findall(".//item")[:8]:
             items.append({
                 "title": node.findtext("title") or "",
                 "description": node.findtext("description") or "",
@@ -202,10 +205,11 @@ class NewsSignalTool:
         }}
 
     def assess(self, sido: str, gugun: str, house_type: str,
-               *, building_name: str = "", market_context: dict | None = None) -> dict[str, Any]:
+               *, building_name: str = "", market_context: dict | None = None,
+               use_llm: bool = True) -> dict[str, Any]:
         market_context = market_context or {}
         query = f"{sido} {gugun} 주택 부동산 개발 교통".strip()
-        cache_key = json.dumps([query, house_type, building_name, market_context],
+        cache_key = json.dumps([query, house_type, building_name, market_context, use_llm],
                                ensure_ascii=False, sort_keys=True, default=str)
         cached = self._cache.get(cache_key)
         if cached and time.time() - cached[0] < 1800:
@@ -231,7 +235,7 @@ class NewsSignalTool:
             judgement = None
             strategy = "keyword_fallback"
             judge_error = None
-            if self.llm and hasattr(self.llm, "analyze_json"):
+            if use_llm and self.llm and hasattr(self.llm, "analyze_json"):
                 try:
                     judgement = self.llm.analyze_json(
                         operation="llm.market_news_impact",
@@ -239,7 +243,7 @@ class NewsSignalTool:
                         user=json.dumps(payload, ensure_ascii=False, default=str),
                         schema=NEWS_JUDGE_SCHEMA,
                         schema_name="market_news_impact",
-                        max_tokens=2200,
+                        max_tokens=900,
                     )
                     if judgement:
                         strategy = "llm_structured"
@@ -283,7 +287,11 @@ class NewsSignalTool:
                 "query": query, "sentiment_score": round(score, 3),
                 "annual_adjustment_pct_point": round(score * 1.5, 3),
                 "applied": bool(relevant),
-                "method": "NAVER 뉴스 검색 + LLM 관련성·방향 구조화 판정 + 45일 반감기",
+                "method": (
+                    "NAVER 뉴스 검색 + LLM 관련성·방향 구조화 판정 + 45일 반감기"
+                    if strategy == "llm_structured"
+                    else "NAVER 뉴스 검색 + 지역·주택 키워드 즉시 판정 + 45일 반감기"
+                ),
                 "candidate_count": len(items), "relevant_count": len(relevant),
                 "article_count": len(items), "headlines": relevant,
                 "relevant_headlines": relevant, "overall_assessment": overall,
@@ -291,8 +299,10 @@ class NewsSignalTool:
                 "judge_model": getattr(self.llm, "model", None) if strategy == "llm_structured" else None,
                 "judge_error": judge_error,
                 "source_fallback_reason": source_fallback_reason,
-                "warning": (("LLM 판정 실패로 지역·주택 키워드 폴백을 사용했습니다. "
-                             if judge_error else "") +
+                "warning": ((("LLM 판정 실패로 지역·주택 키워드 폴백을 사용했습니다. "
+                              if judge_error else
+                              "빠른 상세 분석에서는 키워드 판정을 우선 사용했습니다. "
+                              if not use_llm else "")) +
                             "제목·검색 요약 기반 보조 판단입니다. 기사 원문과 실제 사업 진행 여부를 확인하세요."),
             }
             self._cache[cache_key] = (time.time(), result)

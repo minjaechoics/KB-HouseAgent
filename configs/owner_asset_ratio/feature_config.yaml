@@ -1,0 +1,44 @@
+version: 1
+quantiles: [0.1, 0.25, 0.5, 0.75, 0.9]
+
+unit_count:
+  observed_priority: [unit_count, family_count, household_count]
+  max_valid_units: 100
+  numeric:
+    - total_floor_area
+    - land_area
+    - ground_floors
+    - parking_count
+    - building_age
+  categorical:
+    - structure_code
+    - legal_dong_code
+    - main_use_code
+
+deposit:
+  target: deposit
+  numeric:
+    - rental_area
+    - building_age
+    - monthly_rent
+    - legal_dong_3m_deposit_median
+    - legal_dong_12m_deposit_median
+    - legal_dong_12m_deposit_growth
+    - transaction_count_3m
+    - transaction_count_12m
+  categorical: [legal_dong, contract_type, housing_type]
+
+property_value:
+  target: sale_price
+  numeric:
+    - land_area
+    - total_floor_area
+    - residential_floor_area
+    - building_age
+    - ground_floors
+    - parking_count
+    - official_house_price
+    - official_land_price
+    - nearby_sale_price_per_land_area
+    - nearby_sale_price_per_floor_area
+  categorical: [structure_code, main_use_code, legal_dong]

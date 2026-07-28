@@ -22,6 +22,25 @@ from typing import Callable, Optional
 import pandas as pd
 
 
+def _number(value):
+    """PDF/외부 피드의 None·NaN 숫자를 비교 가능한 값으로 정규화한다."""
+    try:
+        number = float(value)
+        return number if pd.notna(number) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _lte(value, maximum) -> bool:
+    number = _number(value)
+    return number is not None and number <= float(maximum)
+
+
+def _gte(value, minimum) -> bool:
+    number = _number(value)
+    return number is not None and number >= float(minimum)
+
+
 @dataclass
 class ConditionAtom:
     key: str
@@ -102,7 +121,7 @@ def build_atoms(slots: dict) -> AtomSet:
         # 예산 초과는 hard: 감당 못 하면 추천 의미 없음
         aset.add(ConditionAtom(
             "max_deposit", f"보증금 ≤ {v:,.0f}만원",
-            lambda r, v=v: (r["deposit_manwon"] <= v),
+            lambda r, v=v: _lte(r.get("deposit_manwon"), v),
             hard=slots.get("deposit_is_hard", True), weight=3.0,
         ))
 
@@ -117,28 +136,28 @@ def build_atoms(slots: dict) -> AtomSet:
     if (v := slots.get("max_monthly_rent_manwon")) is not None:
         aset.add(ConditionAtom(
             "max_monthly_rent", f"월세 ≤ {v:,.0f}만원",
-            lambda r, v=v: (r.get("monthly_rent_manwon", 0) <= v),
+            lambda r, v=v: _lte(r.get("monthly_rent_manwon"), v),
             hard=False, weight=2.0,
         ))
 
     if (v := slots.get("max_maintenance_manwon")) is not None:
         aset.add(ConditionAtom(
             "max_maintenance", f"관리비 ≤ {v:,.0f}만원",
-            lambda r, v=v: (r.get("maintenance_fee_manwon", 0) <= v),
+            lambda r, v=v: _lte(r.get("maintenance_fee_manwon"), v),
             hard=False, weight=1.0,
         ))
 
     if (v := slots.get("min_area_m2")) is not None:
         aset.add(ConditionAtom(
             "min_area", f"전용면적 ≥ {v:.0f}㎡",
-            lambda r, v=v: (r.get("area_m2", 0) >= v),
+            lambda r, v=v: _gte(r.get("area_m2"), v),
             hard=False, weight=1.0,
         ))
 
     if (v := slots.get("max_building_age")) is not None:
         aset.add(ConditionAtom(
             "max_age", f"건물연식 ≤ {v:.0f}년",
-            lambda r, v=v: (r.get("building_age_years", 0) <= v),
+            lambda r, v=v: _lte(r.get("building_age_years"), v),
             hard=False, weight=1.0,
         ))
 

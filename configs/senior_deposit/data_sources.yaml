@@ -1,0 +1,17 @@
+building_hub:
+  dataset_id: "15134735"
+  official_page: "https://www.data.go.kr/data/15134735/openapi.do"
+  credential_env: "MOLIT_BUILDING_HUB_KEY"
+  automated_collection: true
+
+rtms_sh_rent:
+  dataset_id: "15126472"
+  official_page: "https://www.data.go.kr/data/15126472/openapi.do"
+  credential_env: "MOLIT_SERVICE_KEY"
+  automated_collection: true
+  exact_building_join_from_partial_lot: false
+
+court_auction:
+  official_page: "https://www.courtauction.go.kr/"
+  automated_collection: false
+  permitted_use: "manually curated, anonymized research labels only"

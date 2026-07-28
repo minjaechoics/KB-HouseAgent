@@ -22,12 +22,21 @@ from src import config
 def engineer(df: pd.DataFrame) -> pd.DataFrame:
     """원본 매물 DataFrame -> 파생 피처 추가."""
     df = df.copy()
-    market = df["market_price_manwon"].to_numpy()
-    units = df["building_total_units"].to_numpy()
-    deposit = df["deposit_manwon"].to_numpy()
-    senior_dep = df["senior_deposit_sum_manwon"].to_numpy()
-    senior_mtg = df["senior_mortgage_manwon"].to_numpy()
-    rank = df["my_priority_rank"].to_numpy()
+    # 공개 매물에는 등기·세대수처럼 계약 전에만 확인되는 값이 비어 있을 수
+    # 있다. object/None 배열을 그대로 numpy 연산에 넘기면 위험도 계산 전체가
+    # 중단되므로 계산 입력을 명시적인 기본값으로 정규화한다.
+    def numeric(name: str, default: float = 0.0) -> np.ndarray:
+        if name not in df.columns:
+            return np.full(len(df), default, dtype=float)
+        return pd.to_numeric(df[name], errors="coerce").fillna(default).to_numpy(dtype=float)
+
+    deposit = numeric("deposit_manwon")
+    market = numeric("market_price_manwon")
+    market = np.where(market > 0, market, np.maximum(deposit, 1.0))
+    units = np.maximum(numeric("building_total_units", 1.0), 1.0)
+    senior_dep = numeric("senior_deposit_sum_manwon")
+    senior_mtg = numeric("senior_mortgage_manwon")
+    rank = np.maximum(numeric("my_priority_rank", 1.0), 1.0)
 
     recover = market * config.AUCTION_RECOVERY_RATIO
     unit_value = market / np.maximum(units, 1)
@@ -49,10 +58,11 @@ def engineer(df: pd.DataFrame) -> pd.DataFrame:
     # 7) 건물 규모(세대수 많을수록 경합 심함)
     df["log_units"] = np.log1p(units)
     # 8) 연식
-    df["building_age_years"] = df["building_age_years"]
+    df["building_age_years"] = numeric("building_age_years")
     # 9) 수도권 여부
     metro = {"서울", "경기", "인천"}
-    df["is_metro"] = df["sido"].isin(metro).astype(int)
+    sido = df["sido"] if "sido" in df.columns else pd.Series("", index=df.index)
+    df["is_metro"] = sido.isin(metro).astype(int)
 
     return df
 

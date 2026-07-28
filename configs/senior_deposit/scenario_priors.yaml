@@ -1,0 +1,20 @@
+occupancy:
+  low:
+    alpha: 7.0
+    beta: 3.0
+  baseline:
+    alpha: 18.0
+    beta: 2.0
+  high:
+    alpha: 38.0
+    beta: 2.0
+
+seniority:
+  conservative: 1.0
+  baseline_scenario: 0.9
+  note: "The baseline value is a declared scenario assumption, not a trained probability."
+
+within_building_log_effect:
+  independent: 0.0
+  moderate: 0.12
+  high: 0.25

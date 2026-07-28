@@ -48,13 +48,21 @@ SAFETY_SOURCES = {
         "address": ("소재지도로명주소", "소재지지번주소", "주소", "address"),
     },
     "police": {
-        "files": ("경찰청_전국 치안센터 주소 현황_20251231.csv", "police.csv"),
+        "files": (
+            "police_gg.csv",
+            "경찰청_전국 치안센터 주소 현황_20251231.csv",
+            "police.csv",
+        ),
         "lat": ("WGS84위도", "위도", "lat", "latitude"),
         "lng": ("WGS84경도", "경도", "lng", "longitude"),
         "address": ("주소", "소재지도로명주소", "address"),
     },
     "fire_station": {
-        "files": ("소방청_시도 소방서 현황_20250701.csv", "fire_station.csv"),
+        "files": (
+            "fire_station_gg.csv",
+            "소방청_시도 소방서 현황_20250701.csv",
+            "fire_station.csv",
+        ),
         "lat": ("WGS84위도", "위도", "lat", "latitude"),
         "lng": ("WGS84경도", "경도", "lng", "longitude"),
         "address": ("주소", "소재지도로명주소", "address"),
@@ -92,13 +100,19 @@ class SafetyTool:
             or self.convenience_tool.safemap.available
 
     def _find_path(self, candidates) -> Path | None:
-        if not self.data_dir.exists():
+        if not self.data_dir.exists() and not GEOCODED_DIR.exists():
             return None
         by_lower = {path.name.lower(): path for path in self.data_dir.glob("*.csv")}
+        by_lower.update({
+            path.name.lower(): path for path in GEOCODED_DIR.glob("*.csv")
+        })
         for name in candidates:
             path = self.data_dir / name
             if path.exists():
                 return path
+            generated_path = GEOCODED_DIR / name
+            if generated_path.exists():
+                return generated_path
             if name.lower() in by_lower:
                 return by_lower[name.lower()]
         return None
@@ -238,7 +252,7 @@ class SafetyTool:
 
         (counts["convenience_24h"], sources["convenience_24h"],
          places["convenience_24h"]) = self.convenience_tool.count_convenience_stores(
-            lat, lng, radius_m, context=context, allow_local=False)
+            lat, lng, radius_m, context=context, allow_local=True)
 
         available = [key for key, value in counts.items() if value is not None]
         source = "real" if len(available) == len(counts) else (

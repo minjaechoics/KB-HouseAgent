@@ -1,0 +1,15 @@
+{
+  "building": {
+    "rows": 9482,
+    "invalid_unit_values_set_missing": {
+      "unit_count": 8935,
+      "family_count": 4415,
+      "household_count": 8183
+    },
+    "missing_registered_units": 3035
+  },
+  "leases": 34095,
+  "sales": 1697,
+  "suwon_only": true,
+  "building_level_lease_join_used": false
+}

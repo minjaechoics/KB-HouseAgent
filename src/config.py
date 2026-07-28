@@ -41,6 +41,16 @@ OPENAI_FALLBACK_MODEL = os.environ.get(
 SAFEMAP_CONVENIENCE_URL = "https://www.safemap.go.kr/openapi2/IF_0039"
 SAFEMAP_SERVICE_KEY = os.environ.get("SAFEMAP_SERVICE_KEY", "").strip()
 
+# 경기도 파출소·지구대 및 소방/경찰 시설 현황. 키는 private env에서만
+# 주입하며, 갱신 스크립트가 좌표 CSV를 생성하면 런타임은 그 캐시만 읽는다.
+GYEONGGI_OPENAPI_KEY = os.environ.get("GYEONGGI_OPENAPI_KEY", "").strip()
+GYEONGGI_POLICE_URL = (
+    "https://openapi.gg.go.kr/Ptrldvsnsubpolcstus"
+)
+GYEONGGI_SAFETY_FACILITY_URL = (
+    "https://openapi.gg.go.kr/FiresttnPolcsttnM"
+)
+
 # NAVER Maps 키와 별개인 NAVER API HUB 검색 키. 뉴스/지역검색에서 공유한다.
 NAVER_API_HUB_CLIENT_ID = os.environ.get("NAVER_API_HUB_CLIENT_ID", "").strip()
 NAVER_API_HUB_CLIENT_SECRET = os.environ.get("NAVER_API_HUB_CLIENT_SECRET", "").strip()

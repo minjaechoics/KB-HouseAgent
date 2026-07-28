@@ -1,0 +1,6 @@
+scenarios:
+  independence: 0.0
+  weak_positive: 0.2
+  moderate_positive: 0.4
+  strong_positive: 0.6
+note: 실제 잔차 상관 학습값이 아닌 의존성 민감도 분석용 가정

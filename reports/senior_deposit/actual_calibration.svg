@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="560"
+viewBox="0 0 560 560" role="img" aria-label="Senior deposit interval calibration">
+<rect width="560" height="560" fill="white"/>
+<text x="280" y="28" text-anchor="middle" font-size="18">
+Unit-deposit interval coverage (actual)</text>
+<line x1="60" y1="500" x2="500" y2="500" stroke="#333"/>
+<line x1="60" y1="500" x2="60" y2="60" stroke="#333"/>
+<line x1="60" y1="500" x2="480" y2="80" stroke="#999" stroke-dasharray="6 5"/>
+<text x="280" y="540" text-anchor="middle">Nominal coverage</text>
+<text x="16" y="280" transform="rotate(-90 16 280)" text-anchor="middle">
+Empirical coverage</text>
+<circle cx="270.0" cy="290.0" r="8" fill="#FFBC00"><title>nominal=0.5, empirical=0.5000968054211036</title></circle><circle cx="396.0" cy="163.9" r="8" fill="#FFBC00"><title>nominal=0.8, empirical=0.8001290738948048</title></circle><circle cx="438.0" cy="122.0" r="8" fill="#FFBC00"><title>nominal=0.9, empirical=0.9000968054211036</title></circle>
+</svg>

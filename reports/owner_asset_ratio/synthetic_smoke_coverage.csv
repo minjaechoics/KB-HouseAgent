@@ -1,0 +1,5 @@
+﻿model,nominal_coverage,empirical_coverage,data_kind
+deposit,0.5,0.5009345794392523,synthetic_smoke_only
+deposit,0.8,0.8037383177570093,synthetic_smoke_only
+property_value,0.5,0.5055762081784386,synthetic_smoke_only
+property_value,0.8,0.8066914498141264,synthetic_smoke_only

@@ -19,9 +19,12 @@
 from __future__ import annotations
 import logging
 import copy
+import time
 import uuid
 from typing import Optional
 from pathlib import Path
+from datetime import date
+import pandas as pd
 import requests
 
 try:
@@ -32,6 +35,7 @@ except ImportError as e:
     raise SystemExit("서버 실행에는 fastapi, uvicorn 설치 필요: pip install fastapi uvicorn")
 
 from src.agent.harness import JeonseAgent
+from src.audit import DecisionAuditStore
 from src.agent.llm import MockLLM
 from src.agent.planner import Planner
 from src.fraud_risk.infer import FraudRiskScorer
@@ -41,7 +45,12 @@ from src.server.property_search import (
     make_initial_scope_atom, merge_atoms,
 )
 from src.report import PropertyReportService
+from src.optimization import optimize_housing_choices
+from src.preferences import normalize_preferences
 from src.real_estate_feeds.storage import ensure_feed_schema, feed_status
+from src import config
+from src.owner_asset_ratio import OwnerAssetRatioPipeline
+from src.senior_deposit import SeniorDepositPipeline
 
 ensure_feed_schema()
 
@@ -53,13 +62,41 @@ _agent = JeonseAgent(recommender_name="rule")
 _scorer = FraudRiskScorer()
 _property_search = AtomicPropertySearch(map_tool=_agent.map_tool)
 _property_report = PropertyReportService(llm=_agent.llm, map_tool=_agent.map_tool)
+_audit = DecisionAuditStore()
+_owner_ratio_pipeline: OwnerAssetRatioPipeline | None = None
+_owner_ratio_artifact = (
+    config.MODELS_DIR / "owner_asset_ratio" / "owner_asset_ratio_actual.joblib")
+_senior_deposit_pipeline: SeniorDepositPipeline | None = None
+_senior_deposit_artifact = (
+    config.MODELS_DIR / "senior_deposit" / "senior_deposit_actual.joblib")
+_building_registry_cache: pd.DataFrame | None = None
 
 # 데모용 인메모리 세션. 운영: Redis(session_id → state 직렬화)로 교체.
 _SESSIONS: dict[str, dict] = {}
 
+# This release is intentionally a single-region prototype.  Enforce the scope
+# on the server as well as in the UI so direct API calls cannot escape it.
+PROTOTYPE_SIDO = "경기"
+PROTOTYPE_GUGUN = "수원시 팔달구"
+
+
+def _prototype_profile(values: dict) -> dict:
+    locked = dict(values)
+    locked["preferred_sido"] = PROTOTYPE_SIDO
+    locked["preferred_gugun"] = PROTOTYPE_GUGUN
+    return locked
+
 
 class ChildPlanIn(BaseModel):
     birth_year: int = Field(ge=2000, le=2100)
+
+
+class PreferenceProfileIn(BaseModel):
+    mode: str = Field(default="balanced", pattern="^(stable|balanced|growth)$")
+    risk_tolerance: str = Field(default="balanced", pattern="^(stable|balanced|growth)$")
+    weights: dict[str, float] = Field(default_factory=dict)
+    approved: bool = True
+    source: str = "setup_ui"
 
 
 class SessionCreate(BaseModel):
@@ -92,6 +129,16 @@ class SessionCreate(BaseModel):
     is_korean_national: Optional[bool] = None
     has_income_proof: Optional[bool] = None
     contract_deposit_paid_5pct: Optional[bool] = None
+    youth_life_stage: Optional[str] = Field(
+        default=None, pattern="^(student|early_career|other)$"
+    )
+    housing_priorities: list[str] = Field(default_factory=list, max_length=12)
+    has_hf_jeonse_loan_guarantee: Optional[bool] = None
+    move_in_registration_possible: Optional[bool] = None
+    fixed_date_possible: Optional[bool] = None
+    senior_mortgage_established_date: Optional[date] = None
+    wants_guarantee_insurance: Optional[bool] = None
+    preferences: PreferenceProfileIn = Field(default_factory=PreferenceProfileIn)
 
 
 class ChatIn(BaseModel):
@@ -185,7 +232,83 @@ class PropertyReportIn(BaseModel):
     liquid_asset_return_rate: float = Field(default=0.03, ge=-0.3, le=0.5)
     selected_finance_program_id: Optional[str] = Field(default=None, max_length=200)
     requested_loan_amount_manwon: Optional[float] = Field(default=None, ge=0)
+    monte_carlo_paths: int = Field(default=10_000, ge=500, le=20_000)
+    simulation_seed: Optional[int] = Field(default=None, ge=0, le=2_147_483_647)
+    enable_job_loss: bool = False
+    annual_job_loss_probability: float = Field(default=0.05, ge=0, le=0.5)
     lifestyle: Optional[LifestyleSimulationIn] = None
+
+
+class OptimizationIn(BaseModel):
+    session_id: str
+    property_ids: Optional[list[str]] = Field(default=None, max_length=120)
+    horizon_years: int = Field(default=10, ge=1, le=30)
+    requested_loan_amount_manwon: Optional[float] = Field(default=None, ge=0)
+
+
+class OwnerAssetRatioIn(BaseModel):
+    session_id: str
+    property_id: str
+    samples: int = Field(default=20_000, ge=1_000, le=100_000)
+    seed: int = Field(default=20260728, ge=0, le=2_147_483_647)
+    occupancy_scenario: str = Field(
+        default="baseline", pattern="^(low|baseline|high)$")
+    random_effect_sigma: Optional[float] = Field(default=None, ge=0, le=1.0)
+
+
+class SeniorDepositIn(BaseModel):
+    session_id: str
+    property_id: Optional[str] = None
+    building_id: Optional[str] = None
+    reference_date: date
+    samples: int = Field(default=20_000, ge=1_000, le=100_000)
+    seed: int = Field(default=20260728, ge=0, le=2_147_483_647)
+    scenario: str = Field(
+        default="conservative",
+        pattern="^(conservative|probabilistic|scenario)$",
+    )
+    occupancy_scenario: str = Field(
+        default="baseline", pattern="^(low|baseline|high)$")
+    senior_probability: Optional[float] = Field(default=None, ge=0, le=1)
+    random_effect_sigma: Optional[float] = Field(default=None, ge=0, le=1)
+    target_rooms_excluded: int = Field(default=1, ge=0, le=10)
+
+
+def _load_owner_ratio_pipeline() -> OwnerAssetRatioPipeline | None:
+    global _owner_ratio_pipeline
+    if _owner_ratio_pipeline is not None:
+        return _owner_ratio_pipeline
+    if not _owner_ratio_artifact.exists():
+        return None
+    _owner_ratio_pipeline = OwnerAssetRatioPipeline.load(
+        _owner_ratio_artifact, allow_synthetic=False)
+    return _owner_ratio_pipeline
+
+
+def _load_senior_deposit_pipeline() -> SeniorDepositPipeline | None:
+    global _senior_deposit_pipeline
+    if _senior_deposit_pipeline is not None:
+        return _senior_deposit_pipeline
+    if not _senior_deposit_artifact.exists():
+        return None
+    _senior_deposit_pipeline = SeniorDepositPipeline.load(
+        _senior_deposit_artifact, allow_synthetic=False)
+    return _senior_deposit_pipeline
+
+
+def _actual_building(building_id: str) -> dict | None:
+    global _building_registry_cache
+    if _building_registry_cache is None:
+        path = (
+            config.ROOT / "data" / "processed"
+            / "owner_asset_ratio" / "buildings.csv")
+        if not path.exists():
+            return None
+        _building_registry_cache = pd.read_csv(path, low_memory=False)
+    matches = _building_registry_cache[
+        _building_registry_cache["building_id"].astype(str).eq(
+            str(building_id))]
+    return None if matches.empty else matches.iloc[0].to_dict()
 
 
 @app.get("/health")
@@ -195,7 +318,18 @@ def health():
             "model": getattr(_agent.llm, "model", None),
             "agentic": bool(getattr(_agent.llm, "supports_agentic_calls", False)),
             "pipeline": ["plan", "text2sql", "tools", "validate", "synthesize"],
-            "map": _agent.map_tool.status()}
+            "map": _agent.map_tool.status(),
+            "owner_asset_ratio": {
+                "available": _owner_ratio_artifact.exists(),
+                "artifact_kind_required": "actual",
+                "synthetic_artifact_allowed": False,
+            },
+            "senior_deposit": {
+                "available": _senior_deposit_artifact.exists(),
+                "model_mode": "scenario_only",
+                "legal_seniority_confirmed": False,
+                "synthetic_artifact_allowed": False,
+            }}
 
 
 @app.get("/api/data-sources/status")
@@ -228,12 +362,24 @@ def landing_hero():
     })
 
 
+@app.get("/assets/youth-home-loader-sprite-v1.png", include_in_schema=False)
+def report_loader_sprite():
+    asset = Path(__file__).with_name("assets") / "youth-home-loader-sprite-v1.png"
+    if not asset.exists():
+        raise HTTPException(404, "로딩 이미지를 준비하지 못했습니다.")
+    return FileResponse(asset, media_type="image/png", headers={
+        "Cache-Control": "public, max-age=86400, immutable",
+    })
+
+
 @app.post("/session")
 def create_session(body: SessionCreate):
     sid = uuid.uuid4().hex
-    user = dict(user_id=sid, **body.model_dump())
+    profile = _prototype_profile(body.model_dump())
+    profile["preferences"] = normalize_preferences(profile.get("preferences"))
+    user = dict(user_id=sid, **profile)
     session = _agent.new_session(user)
-    profile_atoms = atoms_from_profile(body.model_dump())
+    profile_atoms = atoms_from_profile(profile)
     initial_scope = make_initial_scope_atom(profile_atoms)
     base_atoms = [initial_scope] if initial_scope else []
     session["map_ui"] = {
@@ -301,7 +447,18 @@ def naver_map_sdk():
 
 @app.get("/api/regions")
 def regions():
-    return {"regions": _property_search.regions()}
+    available = _property_search.regions()
+    sido_row = next((row for row in available if row.get("name") == PROTOTYPE_SIDO), {})
+    gugun_row = next(
+        (row for row in (sido_row.get("gugun") or []) if row.get("name") == PROTOTYPE_GUGUN),
+        {},
+    )
+    return {"regions": [{
+        "name": PROTOTYPE_SIDO,
+        "count": int(sido_row.get("count") or 0),
+        "gugun": [{"name": PROTOTYPE_GUGUN, "count": int(gugun_row.get("count") or 0)}],
+        "locked": True,
+    }], "prototype_locked": True}
 
 
 def _reset_condition_workflow(workflow: dict) -> None:
@@ -645,7 +802,7 @@ def update_initial_conditions(body: InitialConditionsUpdateIn):
     if session is None:
         raise HTTPException(404, "session not found. POST /session first.")
     ui = session.setdefault("map_ui", {})
-    updates = body.model_dump(exclude={"session_id"})
+    updates = _prototype_profile(body.model_dump(exclude={"session_id"}))
     session.setdefault("user", {}).update(updates)
 
     profile_atoms = atoms_from_profile(session["user"])
@@ -728,12 +885,15 @@ def search_properties(body: PropertySearchIn):
         if enabled is not None:
             enabled.add(initial_scope["id"])
     try:
-        return _property_search.search(
+        result = _property_search.search(
             atoms, enabled, body.limit,
             sort_by=body.sort_by,
             origin_lat=body.origin_lat,
             origin_lng=body.origin_lng,
         )
+        ui["last_search_properties"] = copy.deepcopy(result.get("properties") or [])
+        ui["last_search_trace"] = copy.deepcopy(result.get("trace") or {})
+        return result
     except ValueError as exc:
         logger.info("property search validation rejected: %s", exc)
         raise HTTPException(400, "검색 조건을 다시 확인해 주세요.") from exc
@@ -755,6 +915,10 @@ def property_report(body: PropertyReportIn):
                 "inflation_rate": body.inflation_rate,
                 "liquid_asset_return_rate": body.liquid_asset_return_rate,
                 "selected_finance_program_id": body.selected_finance_program_id,
+                "monte_carlo_paths": body.monte_carlo_paths,
+                "simulation_seed": body.simulation_seed,
+                "enable_job_loss": body.enable_job_loss,
+                "annual_job_loss_probability": body.annual_job_loss_probability,
                 "requested_loan_amount_manwon": (
                     body.requested_loan_amount_manwon
                     if body.requested_loan_amount_manwon is not None else
@@ -765,12 +929,290 @@ def property_report(body: PropertyReportIn):
                     body.lifestyle.model_dump() if body.lifestyle is not None else None
                 ),
             },
+            session_id=body.session_id,
         )
     except KeyError as exc:
+        _audit.fail_latest_running(
+            session_id=body.session_id, property_id=body.property_id, error=exc)
         raise HTTPException(404, "property not found") from exc
     except Exception as exc:
+        _audit.fail_latest_running(
+            session_id=body.session_id, property_id=body.property_id, error=exc)
         logger.exception("property report failed")
         raise HTTPException(400, "매물 분석을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.") from exc
+
+
+@app.post("/api/properties/owner-asset-ratio")
+def owner_asset_ratio(body: OwnerAssetRatioIn):
+    """Estimate D/A only when a real-data artifact has been approved."""
+    session = _SESSIONS.get(body.session_id)
+    if session is None:
+        raise HTTPException(404, "session not found. POST /session first.")
+    pipeline = _load_owner_ratio_pipeline()
+    if pipeline is None:
+        raise HTTPException(
+            409,
+            "수원시 건축물대장과 가계금융복지조사 마이크로데이터로 "
+            "학습·검증한 actual artifact가 아직 없습니다. 합성 smoke "
+            "artifact는 사용자 위험도에 사용하지 않습니다.",
+        )
+    prop = _property_report.property(body.property_id)
+    if prop is None:
+        raise HTTPException(404, "property not found")
+    run_id = _audit.start_run(
+        session_id=body.session_id,
+        property_id=body.property_id,
+        input_snapshot={
+            "samples": body.samples,
+            "seed": body.seed,
+            "occupancy_scenario": body.occupancy_scenario,
+            "random_effect_sigma": body.random_effect_sigma,
+        },
+        simulation_seed=body.seed,
+        model_versions={
+            "owner_asset_ratio": pipeline.metadata.get("model_version")},
+        data_version=pipeline.metadata.get("trained_at"),
+    )
+    started = time.perf_counter()
+    try:
+        result = pipeline.infer(
+            prop,
+            samples=body.samples,
+            seed=body.seed,
+            occupancy_scenario=body.occupancy_scenario,
+            random_effect_sigma=body.random_effect_sigma,
+        )
+        result["decision_run_id"] = run_id
+        _audit.record_step(
+            run_id,
+            stage="four_component_owner_asset_ratio",
+            tool="monte_carlo",
+            input_data={
+                "property_id": body.property_id,
+                "samples": body.samples,
+                "seed": body.seed,
+            },
+            output_data={
+                "ratio": result.get("deposit_to_total_assets_ratio"),
+                "data_quality": result.get("data_quality"),
+                "owner_prior_fallback_counts": result.get(
+                    "owner_prior_fallback_counts"),
+            },
+            source_refs=[
+                "building_registry", "rtms_sh_rent", "rtms_sh_trade",
+                "household_finance_welfare_survey_prior",
+            ],
+        )
+        _audit.complete_run(
+            run_id, result,
+            elapsed_ms=(time.perf_counter() - started) * 1000)
+        return result
+    except Exception as exc:
+        _audit.fail_run(
+            run_id, exc,
+            elapsed_ms=(time.perf_counter() - started) * 1000)
+        logger.exception("owner asset ratio inference failed")
+        raise HTTPException(
+            400, "전세금/집주인 총자산 비율 추정을 완료하지 못했습니다.") from exc
+
+
+@app.post("/api/properties/senior-deposit")
+def senior_deposit(body: SeniorDepositIn):
+    """Estimate existing/senior deposits without claiming legal certainty."""
+    if _SESSIONS.get(body.session_id) is None:
+        raise HTTPException(404, "session not found. POST /session first.")
+    if not body.property_id and not body.building_id:
+        raise HTTPException(422, "property_id 또는 building_id가 필요합니다.")
+    if body.building_id:
+        pipeline = _load_senior_deposit_pipeline()
+    else:
+        integration = _property_report.senior_deposit
+        pipeline = (
+            integration._load_pipeline() if integration.available else None
+        )
+    if pipeline is None:
+        raise HTTPException(
+            409,
+            "실제 건축HUB·RTMS로 학습한 선순위 보증금 artifact가 없습니다.",
+        )
+    if body.building_id:
+        source = _actual_building(body.building_id)
+        if source is None:
+            raise HTTPException(404, "building_id not found")
+        audit_property_id = body.property_id or body.building_id
+    else:
+        source = _property_report.property(body.property_id or "")
+        if source is None:
+            raise HTTPException(404, "property not found")
+        audit_property_id = body.property_id
+
+    run_id = _audit.start_run(
+        session_id=body.session_id,
+        property_id=audit_property_id,
+        input_snapshot={
+            "property_id": body.property_id,
+            "building_id": body.building_id,
+            "reference_date": body.reference_date.isoformat(),
+            "samples": body.samples,
+            "seed": body.seed,
+            "scenario": body.scenario,
+            "occupancy_scenario": body.occupancy_scenario,
+            "senior_probability": body.senior_probability,
+            "random_effect_sigma": body.random_effect_sigma,
+            "target_rooms_excluded": body.target_rooms_excluded,
+        },
+        simulation_seed=body.seed,
+        model_versions={
+            "senior_deposit": pipeline.metadata.get("model_version")},
+        data_version=pipeline.metadata.get("trained_at"),
+    )
+    started = time.perf_counter()
+    try:
+        if body.building_id:
+            result = pipeline.infer(
+                source,
+                reference_date=body.reference_date.isoformat(),
+                samples=body.samples,
+                seed=body.seed,
+                mode=body.scenario,
+                occupancy_scenario=body.occupancy_scenario,
+                senior_probability=body.senior_probability,
+                random_effect_sigma=body.random_effect_sigma,
+                target_rooms_excluded=body.target_rooms_excluded,
+            )
+            estimate = result
+        else:
+            result = _property_report.senior_deposit.analyze_property(
+                source,
+                reference_date=body.reference_date.isoformat(),
+                samples=body.samples,
+                seed=body.seed,
+                mode=body.scenario,
+                occupancy_scenario=body.occupancy_scenario,
+                senior_probability=body.senior_probability,
+                random_effect_sigma=body.random_effect_sigma,
+                target_rooms_excluded=body.target_rooms_excluded,
+            )
+            estimate = result.get("estimate") or {}
+        result["decision_run_id"] = run_id
+        _audit.record_step(
+            run_id,
+            stage="senior_deposit_mvp",
+            tool="monte_carlo",
+            input_data={
+                "reference_date": body.reference_date.isoformat(),
+                "samples": body.samples,
+                "scenario": body.scenario,
+            },
+            output_data={
+                "available": result.get("available", True),
+                "status": result.get("status", "estimated"),
+                "match": result.get("match"),
+                "senior_deposit": estimate.get("estimated_senior_deposit"),
+                "conservative_upper": estimate.get(
+                    "conservative_upper_deposit"),
+                "data_quality": estimate.get("data_quality"),
+                "model_mode": estimate.get("model_mode"),
+            },
+            source_refs=[
+                "building_registry",
+                "rtms_sh_rent_conditional_distribution",
+                "declared_occupancy_prior",
+                "declared_seniority_scenario",
+            ],
+            fallback=(
+                {"reason": "verified legal-seniority labels unavailable"}
+                if estimate.get("model_mode") == "scenario_only" else None
+            ),
+        )
+        _audit.complete_run(
+            run_id, result,
+            elapsed_ms=(time.perf_counter() - started) * 1000)
+        return result
+    except Exception as exc:
+        _audit.fail_run(
+            run_id, exc,
+            elapsed_ms=(time.perf_counter() - started) * 1000)
+        logger.exception("senior deposit inference failed")
+        raise HTTPException(
+            400, "선순위 임차보증금 추정을 완료하지 못했습니다.") from exc
+
+
+@app.post("/api/optimization/pareto")
+def optimize_pareto(body: OptimizationIn):
+    """현재 검색 교집합 안에서 매물·금융상품·대출액을 MILP로 선택한다."""
+    session = _SESSIONS.get(body.session_id)
+    if session is None:
+        raise HTTPException(404, "session not found. POST /session first.")
+    ui = session.setdefault("map_ui", {})
+    properties = list(ui.get("last_search_properties") or [])
+    if body.property_ids is not None:
+        wanted = set(body.property_ids)
+        properties = [row for row in properties if row.get("property_id") in wanted]
+    if not properties:
+        raise HTTPException(409, "먼저 지도에서 매물을 검색해 주세요.")
+    user = session["user"]
+    region = f"{user.get('preferred_sido', '')} {user.get('preferred_gugun', '')}".strip()
+    programs = _agent.finance_tool.search(
+        user_income_manwon=user.get("monthly_income_manwon"),
+        user_age=user.get("age"), region=region, finance_mode="eligibility",
+        user_profile=user, limit=50,
+    )
+    preference = normalize_preferences(user.get("preferences"))
+    seed = uuid.uuid4().int % 2_147_483_647
+    run_id = _audit.start_run(
+        session_id=body.session_id, property_id=None,
+        input_snapshot={
+            "property_ids": [row.get("property_id") for row in properties],
+            "preferences": preference,
+            "horizon_years": body.horizon_years,
+        },
+        simulation_seed=seed,
+        model_versions={"optimizer": "scipy_milp_pareto_v1"},
+        data_version="current_search_intersection",
+    )
+    started = time.perf_counter()
+    try:
+        result = optimize_housing_choices(
+            properties, programs, user, preference,
+            {
+                "horizon_years": body.horizon_years,
+                "requested_loan_amount_manwon": body.requested_loan_amount_manwon,
+            },
+        )
+        result["decision_run_id"] = run_id
+        _audit.record_step(
+            run_id, stage="milp_pareto_optimization", tool="scipy.optimize.milp",
+            input_data={
+                "property_count": len(properties), "finance_count": len(programs),
+                "preference": preference,
+            },
+            output_data={
+                "status": result.get("status"),
+                "candidate_count": result.get("candidates_evaluated"),
+                "pareto_count": result.get("pareto_candidate_count"),
+                "representative_ids": [
+                    row.get("option_id") for row in result.get("representatives") or []
+                ],
+            },
+            source_refs=["current_search_intersection", "finance_programs"],
+        )
+        _audit.complete_run(
+            run_id, result, elapsed_ms=(time.perf_counter() - started) * 1000)
+        return result
+    except Exception as exc:
+        _audit.fail_run(
+            run_id, exc, elapsed_ms=(time.perf_counter() - started) * 1000)
+        logger.exception("MILP optimization failed")
+        raise HTTPException(400, "최적 조합을 계산하지 못했습니다.") from exc
+
+
+@app.get("/api/decisions/{decision_run_id}")
+def decision_audit(decision_run_id: str):
+    record = _audit.get(decision_run_id)
+    if record is None:
+        raise HTTPException(404, "decision run not found")
+    return record
 
 
 @app.get("/api/map/geocode")

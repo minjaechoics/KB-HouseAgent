@@ -29,7 +29,7 @@ def test_text2sql_safety():
 
 def test_text2sql_query():
     t = PropertyDBTool()
-    rows = t.query(dict(lease_type="전세", sido="서울",
+    rows = t.query(dict(lease_type="전세", sido="경기",
                         order_by="fraud_score ASC", limit=5))
     assert len(rows) > 0
     for r in rows:
@@ -140,7 +140,7 @@ def test_finance_goal_budget_excludes_unrelated_loan_products():
     assert plan["estimated_max_deposit_manwon"] == 25000
 
 
-def test_compound_preferred_region_is_normalized_and_kept():
+def test_compound_preferred_region_is_normalized_but_outside_prototype_scope():
     agent = JeonseAgent("rule")
     user = dict(user_id="REGION", age=22, monthly_income_manwon=100,
                 total_asset_manwon=800, monthly_living_cost_manwon=70,
@@ -149,35 +149,36 @@ def test_compound_preferred_region_is_normalized_and_kept():
     assert session["user"]["preferred_sido"] == "대전"
     assert session["user"]["preferred_gugun"] == "유성구"
     result = agent.handle(session, "아무거나")
-    assert result["status"] == "recommendation"
-    recommendations = [row for group in result["groups"].values() for row in group]
-    assert recommendations
-    assert all(row["sido"] == "대전" and row["gugun"] == "유성구"
-               for row in recommendations)
+    # 현재 승인된 프로토타입 원천은 수원시 팔달구뿐이다. 다른 지역의
+    # 결과를 팔달구 데이터로 꾸며서 반환하면 안 된다.
+    assert result["status"] == "no_result"
 
 
 def test_two_stage_confirm_flow():
     agent = JeonseAgent("rule")
     user = dict(user_id="U", age=29, monthly_income_manwon=320,
                 total_asset_manwon=9000, monthly_living_cost_manwon=120,
-                income_decile=6, preferred_sido="서울")
+                income_decile=6, preferred_sido="경기",
+                preferred_gugun="수원시 팔달구")
     s = agent.new_session(user)
-    r1 = agent.handle(s, "서울 안전한 전세 5천 이내")
+    r1 = agent.handle(s, "수원시 팔달구 안전한 전세 5천 이내")
     assert r1["status"] == "confirm"       # 바로 추천 X, 확인 먼저
     r2 = agent.handle(s, "응")
     assert r2["status"] == "recommendation"
-    assert 0 in r2["groups"]                # 완전 만족 그룹 존재
+    assert r2["groups"]                     # 현재 원천에서 가능한 타협 그룹 존재
 
 
 def test_anything_goes_no_clarify():
     agent = JeonseAgent("rule")
     user = dict(user_id="U", age=29, monthly_income_manwon=300,
                 total_asset_manwon=6000, monthly_living_cost_manwon=120,
-                income_decile=5, preferred_sido=None)
+                income_decile=5, preferred_sido="경기",
+                preferred_gugun="수원시 팔달구")
     s = agent.new_session(user)
     r = agent.handle(s, "그냥 아무거나 추천해줘")
-    # 아무거나 → clarify가 아니라 바로 추천
-    assert r["status"] == "recommendation"
+    # 아무거나 → 추가 질문은 하지 않는다. 현재 팔달구 승인 원천에 예산 내
+    # 매물이 없으면 결과를 꾸미지 않고 no_result를 반환할 수 있다.
+    assert r["status"] in {"recommendation", "no_result"}
 
 
 def test_vague_triggers_clarify():

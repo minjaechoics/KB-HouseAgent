@@ -1,0 +1,13 @@
+alignment:
+  max_date_difference_days: 31
+  require_same_currency: true
+  require_same_building_id: true
+tail_extrapolation:
+  method: linear_slope
+  lower_bound: 0
+  upper_multiplier_limit: 3.0
+calculation:
+  default_samples: 20000
+  minimum_realistic_property_value_manwon: 1000
+  baseline_dependence: independence
+  maximum_outlier_fraction: 0.01

@@ -125,6 +125,62 @@ def build_finance_db(conn: sqlite3.Connection):
     print(f"[db] finance_programs 적재: {len(policies)}개 (정책 + 금융상품 {len(sources)}개 소스)")
 
 
+    build_guarantee_db(conn)
+
+
+def build_guarantee_db(conn: sqlite3.Connection):
+    """보증상품의 공식 공개 요건을 별도 테이블로 관리한다."""
+    rows = [
+        {
+            "product_id": "HUG-JEONSE-RETURN",
+            "provider": "주택도시보증공사(HUG)",
+            "name": "전세보증금반환보증",
+            "capital_deposit_limit_manwon": 70000,
+            "noncapital_deposit_limit_manwon": 50000,
+            "value_limit_ratio": 0.90,
+            "requires_linked_loan_guarantee": 0,
+            "official_review_required": 1,
+            "source_url": "https://www.khug.or.kr/hug/web/ig/dr/igdr000001.jsp",
+            "rule_as_of": "2026-07-28",
+        },
+        {
+            "product_id": "HF-JEONSE-RETURN",
+            "provider": "한국주택금융공사(HF)",
+            "name": "전세지킴보증",
+            "capital_deposit_limit_manwon": 70000,
+            "noncapital_deposit_limit_manwon": 50000,
+            "value_limit_ratio": 0.90,
+            "requires_linked_loan_guarantee": 1,
+            "official_review_required": 1,
+            "source_url": "https://hf.go.kr/ko/sub02/sub02_05_01.do",
+            "rule_as_of": "2026-07-28",
+        },
+        {
+            "product_id": "SGI-JEONSE-RETURN",
+            "provider": "SGI서울보증",
+            "name": "전세금보장신용보험",
+            "capital_deposit_limit_manwon": None,
+            "noncapital_deposit_limit_manwon": None,
+            "value_limit_ratio": None,
+            "requires_linked_loan_guarantee": 0,
+            "official_review_required": 1,
+            "source_url": (
+                "https://www.sgic.co.kr/biz/ccg/index.html?"
+                "p=CCGIRI020101F01"
+            ),
+            "rule_as_of": "2026-07-28",
+        },
+    ]
+    pd.DataFrame(rows).to_sql(
+        "guarantee_products", conn, if_exists="replace", index=False
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_guarantee_product_id "
+        "ON guarantee_products(product_id)"
+    )
+    conn.commit()
+
+
 def build_region_stats_db(conn: sqlite3.Connection):
     """실제 KHUG 지역 사고율을 참조 테이블로 저장(Text2SQL에서 조인 가능)."""
     from src.data_augmentation.region_stats import load_region_accident_stats
@@ -139,6 +195,7 @@ def main():
     conn = sqlite3.connect(config.DB_PATH)
     build_property_db(conn)
     build_finance_db(conn)
+    build_guarantee_db(conn)
     build_region_stats_db(conn)
     conn.close()
     ensure_feed_schema(config.DB_PATH)

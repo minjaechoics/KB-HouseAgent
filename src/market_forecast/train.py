@@ -10,8 +10,10 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error
+from sklearn.linear_model import Ridge
 
 from src import config
+from src.market_forecast.backtest import walk_forward_backtest
 
 FEATURES = [
     "ret_1", "ret_3", "ret_6", "vol_3", "log_count", "national_ret_1",
@@ -22,6 +24,16 @@ SOURCES = [
     ("rtms_offi_trade.csv", "officetel", "excluUseAr"),
     ("rtms_sh_trade.csv", "single_multi", "totalFloorAr"),
 ]
+
+
+class SeasonalNaiveRegressor:
+    """Persistable no-training baseline using the latest one-month return."""
+
+    def fit(self, X, y=None):
+        return self
+
+    def predict(self, X):
+        return pd.to_numeric(X["ret_1"], errors="coerce").fillna(0).to_numpy()
 
 
 def _load_source(path: Path, group: str, area_column: str) -> pd.DataFrame:
@@ -109,14 +121,27 @@ def train(output: Path | None = None) -> dict:
     validation_model.fit(train_frame[FEATURES], train_frame["target"])
     prediction = validation_model.predict(test_frame[FEATURES])
     mae = float(mean_absolute_error(test_frame["target"], prediction))
+    backtest = walk_forward_backtest(frame, FEATURES)
 
     models = {}
     for name, loss, quantile in (
         ("low", "quantile", 0.1), ("base", "squared_error", None),
         ("high", "quantile", 0.9),
     ):
-        model = HistGradientBoostingRegressor(
-            loss=loss, quantile=quantile, **params)
+        if name == "base" and backtest["selected_base_model"] == "seasonal_naive":
+            model = SeasonalNaiveRegressor()
+        elif name == "base" and backtest["selected_base_model"] == "ridge":
+            model = Ridge(alpha=2.0)
+        elif name == "base" and backtest["selected_base_model"] == "lightgbm":
+            from lightgbm import LGBMRegressor
+            model = LGBMRegressor(
+                n_estimators=180, learning_rate=.04, num_leaves=15,
+                min_child_samples=25, reg_lambda=.8, random_state=42,
+                verbosity=-1,
+            )
+        else:
+            model = HistGradientBoostingRegressor(
+                loss=loss, quantile=quantile, **params)
         model.fit(frame[FEATURES], frame["target"])
         models[name] = model
     # 추론 특성은 정답이 존재하는 마지막 학습월이 아니라, 정답이 아직 없는
@@ -129,7 +154,7 @@ def train(output: Path | None = None) -> dict:
     fallback["deal_ym"] = fallback["group"].map(
         latest.groupby("group")["deal_ym"].max())
     artifact = {
-        "version": "rtms_calendar_3month_gbdt_news_v3", "models": models,
+        "version": "rtms_walkforward_conformal_v4", "models": models,
         "features": FEATURES, "latest": latest,
         "fallback": fallback, "groups": sorted(frame.group.unique()),
         "trained_rows": len(frame),
@@ -139,6 +164,12 @@ def train(output: Path | None = None) -> dict:
         "inference_feature_month_max": int(inference.deal_ym.max()),
         "holdout_month_start": int(cutoff),
         "holdout_monthly_log_return_mae": mae,
+        "walk_forward": backtest,
+        "conformal": backtest["conformal"],
+        "news_numeric_policy": (
+            "live LLM news labels are qualitative evidence only; numeric price effects "
+            "require a lagged historical news feature that improves walk-forward validation"
+        ),
         "training_sources": [item[0] for item in SOURCES],
     }
     output.parent.mkdir(parents=True, exist_ok=True)

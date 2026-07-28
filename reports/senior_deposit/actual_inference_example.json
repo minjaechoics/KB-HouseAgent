@@ -1,0 +1,44 @@
+{
+  "model_name": "senior_deposit_mvp_v1",
+  "reference_date": "2026-07-28",
+  "building_id": "HUB-8afd698677db742af7bb",
+  "samples": 20000,
+  "seed": 20260728,
+  "market_feature_source": "legal_dong_asof:202606",
+  "registered_units": {
+    "observed": 13,
+    "p10": 13,
+    "p50": 13,
+    "p90": 13
+  },
+  "occupied_other_units": {
+    "p10": 9,
+    "p50": 11,
+    "p90": 12
+  },
+  "estimated_total_deposit": {
+    "p10": 625905835,
+    "p50": 826660922,
+    "p90": 1043380818
+  },
+  "estimated_senior_deposit": {
+    "p10": 625905835,
+    "p50": 826660922,
+    "p90": 1043380818,
+    "p95": 1107067522
+  },
+  "conservative_upper_deposit": {
+    "p50": 826660922,
+    "p90": 1043380818,
+    "p95": 1107067522
+  },
+  "probability_senior_deposit_over": {
+    "300000000": 0.99955,
+    "500000000": 0.9808,
+    "700000000": 0.7872,
+    "1000000000": 0.1505
+  },
+  "data_quality": "medium",
+  "model_mode": "scenario_only",
+  "warning": "법적 확정값이 아니라 공개정보와 명시적 점유·선순위 시나리오를 결합한 통계적 추정치다."
+}

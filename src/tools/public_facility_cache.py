@@ -9,7 +9,13 @@ import pandas as pd
 
 from src import config
 
-DEFAULT_CACHE = config.DATA_RAW / "facilities" / "public_facilities.csv"
+NATIONWIDE_CACHE = config.DATA_RAW / "facilities" / "public_facilities.csv"
+PROTOTYPE_CACHE = config.DATA_GEN / "public_facilities_paldal.csv"
+# 현재 공개 프로토타입은 수원시 팔달구로 서버에서도 고정되어 있다. 전국
+# 161MB CSV를 매 프로세스의 첫 리포트에서 읽지 않고, 동일 원본에서 좌표로
+# 잘라 만든 팔달구 주변 인덱스를 우선한다. 연구/전국 실행 환경에서는 이
+# 파일을 두지 않으면 기존 전국 원본으로 자동 복귀한다.
+DEFAULT_CACHE = PROTOTYPE_CACHE if PROTOTYPE_CACHE.exists() else NATIONWIDE_CACHE
 
 
 class PublicFacilityCache:

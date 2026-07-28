@@ -15,6 +15,7 @@ API의 x/y는 Web Mercator(EPSG:3857)이므로 WGS84 위경도로 변환해 저�
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 from typing import Any
 
@@ -185,7 +186,15 @@ class SafeMapConvenienceClient:
             df["lng"] = pd.to_numeric(df["lng"], errors="coerce")
             self._data = df.dropna(subset=["lat", "lng"])
             return self._data
-        if self.service_key:
+        # IF_0039는 위치 조회가 없어 캐시가 없으면 전국 페이지를 전부
+        # 내려받아야 한다. 이를 사용자 상세 요청에서 자동 실행하면 첫 화면이
+        # 수십 초 멈춘다. 데이터 갱신 작업(refresh_safemap)에서 명시적으로
+        # 만들고, 운영 조회에서는 즉시 지역검색 폴백으로 넘긴다.
+        if (
+            self.service_key
+            and os.environ.get("SAFEMAP_REFRESH_ON_MISS", "false").lower()
+            in {"1", "true", "yes"}
+        ):
             return self.refresh()
         return None
 

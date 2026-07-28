@@ -346,6 +346,8 @@ def _finance_comparison_projection(
         "rate_pct": round(rate_pct, 3),
         "rate_source": rate_source,
         "rate_is_assumption": rate_source == "fallback_assumption",
+        "loan_term_years": term_years,
+        "repayment_style": repayment_style,
         "initial_monthly_payment_manwon": round(scheduled_monthly, 1),
         "total_interest_manwon": round(cumulative_interest, 1),
         "total_principal_repaid_manwon": round(cumulative_principal, 1),

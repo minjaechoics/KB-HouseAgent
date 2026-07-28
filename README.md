@@ -1,5 +1,9 @@
 # KB HouseAgent
 
+다가구 전세가율 확률분포 통합의 입력 계약·한계·실험·CLI는
+[reports/jeonse_ratio/README.md](reports/jeonse_ratio/README.md)와
+[모델 카드](reports/jeonse_ratio/model_card.md)를 참고하세요.
+
 청년이 매매·전세·월세 주택을 찾을 때 필요한 **매물 검색, 금융상품 자격 조회, 전세보증사고 위험 설명, 통근 검증, 장기 자산 시뮬레이션**을 하나의 Agentic AI 흐름으로 제공하는 의사결정 지원 프로토타입입니다.
 
 팀명: **똘똘한최**
@@ -190,7 +194,7 @@ data/
 
 | 테이블 | 설명 |
 |---|---|
-| `properties` | 전국 매매·전세·월세 후보, 중개 스키마, 좌표, 위험도 |
+| `properties` | 현재 프로토타입의 수원시 팔달구 PDF 매매·전세·월세 후보 |
 | `finance_programs` | 정책과 금융상품, 자격 조건과 공개 정보 |
 | `region_accident_stats` | HUG·HF 관련 지역 사고 통계 |
 | `listing_sources` | 매물 원천, 이용권한, 라이선스와 TTL |
@@ -232,6 +236,25 @@ python scripts/sync_real_estate_feeds.py snapshot INPUT.json \
   --license-reference LICENSE_DOCUMENT \
   --confirm-rights
 ```
+
+### 팔달구 PDF 프로토타입 데이터
+
+현재 UI와 서버는 `경기 / 수원시 팔달구`로 고정됩니다. 팔달구 매물 목록을
+`properties`에 반영하려면 저장소 루트에서 다음 명령을 실행합니다.
+
+```powershell
+py -3 -m scripts.import_paldal_pdf_listings `
+  --source-dir '.\0_수원시팔달구 단독다가구상가주택월세.pdf_260725' `
+  --vacuum
+```
+
+- 기존 `properties.csv`는 `data/generated/backups/`로 이동합니다.
+- `properties` 테이블만 교체하며 `finance_programs`, 실거래 시계열 등은 유지합니다.
+- PDF의 오른쪽 주소는 중개사무소 주소입니다. 매물은 읍면동만 제공되므로 지도에는
+  동 대표점 주변의 **분석용 좌표**를 사용하며 상세주소로 취급하지 않습니다.
+- 가격, 현재 거래 가능 여부, 등기·선순위 권리와 보증 가입 여부는 계약 전에 다시
+  확인해야 합니다. 확인되지 않은 위험 점수는 `NULL`로 둡니다.
+- 원본 PDF와 생성 DB/CSV는 Git에 포함하지 않습니다.
 
 ### 합성 데이터와 DB 생성
 
@@ -382,6 +405,8 @@ python -m src.agent.cli
 | `NAVER_API_HUB_CLIENT_SECRET` | 뉴스·지역검색 | 선택 |
 | `TMAP_APP_KEY` | 대중교통 경로 | 선택 |
 | `MOLIT_RTMS_SERVICE_KEY` | 국토교통부 실거래가 | 갱신 시 |
+| `MOLIT_SERVICE_KEY` | 전세금/총자산 모델의 국토부 수집 공통 키 | 모델 데이터 갱신 시 |
+| `MOLIT_BUILDING_HUB_KEY` | 건축HUB 건축물대장 | 모델 데이터 갱신 시 |
 | `RONE_API_KEY` | 한국부동산원 통계 | 선택 |
 | `BRIGHTDATA_API_TOKEN` | 권한 확인 스냅샷 전달 | 선택 |
 | `CODEF_CLIENT_ID` | CODEF 샌드박스 | 선택 |
@@ -391,6 +416,56 @@ python -m src.agent.cli
 키는 코드, HTML, README에 쓰지 말고 환경변수 또는 Git에서 제외된 `private.env` 파일로만 주입합니다.
 
 ## 테스트
+
+### 수원시 전세금/집주인 총자산 비율 확률모델
+
+개별 집주인의 실제 재산을 생성하거나 직접 예측하지 않고, 호실 수·보증금·
+건물가치·가계금융복지조사 기반 기타자산 prior를 독립 학습한 뒤 Monte Carlo로
+결합합니다. 실제 원자료와 합성 smoke artifact는 코드와 API에서 분리됩니다.
+
+```powershell
+py -m src.cli smoke-train --samples 20000
+py -m pytest -q tests/test_owner_asset_ratio.py tests/test_owner_asset_ratio_survey.py
+```
+
+보관된 실제 2022~2025 가구마스터와 전처리 데이터를 사용한 재학습:
+
+```powershell
+py -m src.cli train-all `
+  --survey data/downloaded/owner_asset_ratio/ahs/raw `
+  --survey-mapping configs/owner_asset_ratio/survey_schema_mapping.ahs_public_2022_2025.yaml `
+  --artifact models/owner_asset_ratio/owner_asset_ratio_actual.joblib
+```
+
+상세 구조와 실제 데이터 명령은
+`docs/OWNER_ASSET_RATIO_PIPELINE.md`, 제한사항은
+`reports/owner_asset_ratio/model_card.md`, 실제 평가 수치는
+`reports/owner_asset_ratio/evaluation_report.md`를 참고하십시오.
+
+### 선순위 임차보증금 보수적 추론
+
+기존 실제 호실 수 모델과 수원 RTMS를 재사용하되, 현재 점유와 법적 선순위
+라벨이 없는 부분은 학습 결과로 꾸미지 않고 `scenario_only`로 표시합니다.
+대표 안전지표는 다른 점유 호실 전원을 선순위로 보는 보수적 p90·p95입니다.
+전세·월세 매물 상세의 `계약안전` 탭에서는 건축HUB 도로명주소가 정확히
+일치할 때만 자동 실행하며, 기존 임차보증금의 P10·P50·보수적 P95와 선택
+매물의 사용자 보증금을 합산하지 않고 별도 항목으로 표시합니다. 유사주소는
+다른 건물을 연결할 수 있어 사용하지 않습니다. 이 값은 전세보증사고
+위험확률을 임의로 변경하지 않고 공식
+전입세대·확정일자 확인을 위한 보조 근거로만 최종평가에 전달됩니다.
+
+```powershell
+py -m src.cli train-all-senior
+py -m src.cli infer `
+  --building-id HUB-8afd698677db742af7bb `
+  --reference-date 2026-07-28 `
+  --samples 20000 `
+  --scenario conservative
+py -m pytest -q tests/test_senior_deposit.py
+```
+
+구조·가정·API는 `docs/SENIOR_DEPOSIT_MODEL.md`, 실제 평가 가능 범위는
+`reports/senior_deposit/evaluation_report.md`를 참고하십시오.
 
 전체 테스트:
 
@@ -406,7 +481,18 @@ python -m pytest -q \
   tests/test_condition_agentic_workflow.py \
   tests/test_property_report.py \
   tests/test_asset_simulation.py \
-  tests/test_fraud_risk_actual.py
+  tests/test_fraud_risk_actual.py \
+  tests/test_probabilistic_decision_engine.py \
+  tests/test_milp_preferences.py \
+  tests/test_market_forecast_calibration.py \
+  tests/test_agent_evaluation.py
+```
+
+실행 중인 서버의 검색 교집합, MILP, 10,000경로 시뮬레이션과 감사 추적을
+한 번에 검증:
+
+```bash
+python scripts/smoke_decision_engine.py
 ```
 
 실제 OpenAI 테스트는 별도 키와 비용이 필요합니다.
@@ -487,6 +573,9 @@ curl http://127.0.0.1/health
 | POST | `/api/conditions/remove` | 조건 삭제 |
 | POST | `/api/properties/search` | 교집합 검색·정렬 |
 | POST | `/api/properties/report` | 상세 의사결정 리포트 |
+| POST | `/api/properties/senior-deposit` | 기존·선순위 보증금 확률분포와 보수적 상한 |
+| POST | `/api/optimization/pareto` | 매물×금융상품×대출액 MILP·파레토 최적화 |
+| GET | `/api/decisions/{decision_run_id}` | 입력·SQL·모델·근거 감사 추적 |
 | GET | `/api/map/geocode` | 장소 주소·좌표 |
 | GET | `/api/map/reverse-geocode` | 좌표의 주소 |
 | POST | `/fraud/score` | 단일 매물 위험도 |
@@ -505,6 +594,11 @@ KB-HouseAgent/
 │  ├─ report/                예산·자산·생활비·최종평가
 │  ├─ fraud_risk/            위험도 학습·보정·추론
 │  ├─ market_forecast/       가격 시계열·뉴스
+│  ├─ simulation/            10,000경로 확률적 자산 시뮬레이션
+│  ├─ optimization/          MILP와 파레토 대표 후보
+│  ├─ preferences/           승인된 사용자 성향과 가중치
+│  ├─ audit/                 decision_run_id 감사 추적
+│  ├─ evaluation/            150문항 에이전트 회귀평가
 │  ├─ market_data/           R-ONE
 │  ├─ real_estate_feeds/     RTMS·외부 스냅샷
 │  ├─ data_augmentation/     전국 데이터 증강
@@ -550,6 +644,7 @@ KB-HouseAgent/
 - `PROPERTY_DECISION_REPORT_AND_FORECAST.md`: 상세 리포트와 전망
 - `docs/OFFICIAL_REAL_ESTATE_DATA_PIPELINE.md`: 공식 데이터 파이프라인
 - `docs/BRIGHTDATA_REAL_ESTATE_INTEGRATION.md`: 권한 확인 스냅샷
+- `docs/PROBABILISTIC_DECISION_ENGINE.md`: 확률 시뮬레이션·MILP·예측보정·평가 백서
 - `MOBILE_APP_BUILD_AND_RELEASE_GUIDE.md`: Android·iOS 전환
 - `AWS_LIGHTSAIL_RUNBOOK.md`: AWS 운영
 
@@ -561,4 +656,3 @@ KB-HouseAgent/
 - 가격 전망과 뉴스 감성은 미래 수익을 보장하지 않습니다.
 - 지도 API 장애 시 예상시간으로 폴백할 수 있습니다.
 - 모델 성능은 라벨 품질, 시점 분할 검증과 확률 보정 결과를 함께 해석해야 합니다.
-

@@ -133,7 +133,8 @@ def test_natural_language_landmark_becomes_atomic_commute_condition():
 
 def test_initial_conditions_are_one_combined_intersection_scope():
     profile_atoms = atoms_from_profile({
-        "preferred_sido": "대전",
+        "preferred_sido": "경기",
+        "preferred_gugun": "수원시 팔달구",
         "transaction_types": ["전세", "월세"],
         "house_types": ["아파트", "오피스텔"],
     })
@@ -145,7 +146,10 @@ def test_initial_conditions_are_one_combined_intersection_scope():
 
     assert result["total"] > 0
     assert result["returned"] <= 10
-    assert all(row["sido"] == "대전" for row in result["properties"])
+    assert all(
+        row["sido"] == "경기" and row["gugun"] == "수원시 팔달구"
+        for row in result["properties"]
+    )
     trace = result["trace"]
     assert trace["pipeline"] == "initial_scope_intersection_then_llm_refinement"
     assert len(trace["per_condition"]) == 1

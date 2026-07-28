@@ -1,0 +1,125 @@
+{
+  "model_version": "senior_deposit_mvp_v1",
+  "trained_at": "2026-07-27T18:11:25.717805+00:00",
+  "data_kind": "actual",
+  "model_mode": "scenario_only",
+  "seed": 20260728,
+  "occupancy_priors": {
+    "low": {
+      "alpha": 7.0,
+      "beta": 3.0
+    },
+    "baseline": {
+      "alpha": 18.0,
+      "beta": 2.0
+    },
+    "high": {
+      "alpha": 38.0,
+      "beta": 2.0
+    }
+  },
+  "baseline_senior_probability": 0.9,
+  "within_building_sigma": 0.12,
+  "occupancy_model_trained": false,
+  "seniority_model_trained": false,
+  "final_calibrator_trained": false,
+  "label_counts": {
+    "occupancy": 0,
+    "seniority": 0,
+    "building_total": 0
+  },
+  "splits": {
+    "lease": [
+      7441,
+      15526,
+      11128
+    ],
+    "lease_spatial_holdout": [
+      "탑동",
+      "파장동",
+      "팔달로1가",
+      "팔달로2가",
+      "팔달로3가",
+      "평동",
+      "평리동",
+      "하광교동",
+      "하동",
+      "호매실동",
+      "화서동"
+    ],
+    "unit_model": [
+      3859,
+      830,
+      1758
+    ]
+  },
+  "validation": {
+    "deposit": {
+      "pinball": {
+        "0.05": 0.06474166803889583,
+        "0.1": 0.10148728611674239,
+        "0.25": 0.17732876308714227,
+        "0.5": 0.21729718029113307,
+        "0.75": 0.17901578759619172,
+        "0.9": 0.10456537854197004,
+        "0.95": 0.0642115345876356
+      },
+      "crossing_rate_before": 0.42458857696030977,
+      "crossing_rate_after": 0.0,
+      "conformal_log_corrections": {
+        "50": 0.010149553758666663,
+        "80": 0.05506182573876828,
+        "90": 0.0769204570252695
+      },
+      "backend": "lightgbm_quantile",
+      "median_absolute_error": 371.9872258635422,
+      "coverage_50": 0.5000968054211036,
+      "coverage_50_before_conformal": 0.4181994191674734,
+      "coverage_80": 0.8001290738948048,
+      "coverage_80_before_conformal": 0.7288157470151662,
+      "coverage_90": 0.9000968054211036,
+      "coverage_90_before_conformal": 0.8584704743465634
+    },
+    "occupancy": "not_evaluated_no_actual_labels",
+    "seniority": "not_evaluated_no_actual_labels",
+    "final_calibrator": "not_evaluated_no_actual_labels"
+  },
+  "test": {
+    "deposit": {
+      "rows": 11100,
+      "pinball": {
+        "0.05": 0.06459841314936202,
+        "0.1": 0.10093110374034049,
+        "0.25": 0.17682521537132703,
+        "0.5": 0.22040466960278496,
+        "0.75": 0.18428830057196002,
+        "0.9": 0.10908575121154376,
+        "0.95": 0.0677855223672961
+      },
+      "median_absolute_error": 355.5764501020999,
+      "median_ape": 0.2848345047645263,
+      "coverage_50": 0.4906306306306306,
+      "coverage_80": 0.7820720720720721,
+      "coverage_90": 0.8826126126126126
+    },
+    "occupancy": "not_evaluated_no_actual_labels",
+    "seniority": "not_evaluated_no_actual_labels",
+    "final_senior_deposit": "not_evaluated_no_building_level_actual_labels"
+  },
+  "provenance": {
+    "building_registry": "actual",
+    "lease_rtms": "actual",
+    "occupancy_labels": "unavailable",
+    "seniority_labels": "unavailable",
+    "building_total_labels": "unavailable",
+    "partial_rtms_lot_exact_join": false
+  },
+  "limitations": [
+    "current occupancy is a declared Beta-Binomial scenario prior",
+    "legal seniority is not observed and is not classified",
+    "conservative p90/p95 is the representative safety output",
+    "the result does not replace official tenant and fixed-date records"
+  ],
+  "market_reference_rows": 34095,
+  "market_reference_max_month": 202607
+}

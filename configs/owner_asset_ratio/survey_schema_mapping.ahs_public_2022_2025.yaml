@@ -1,0 +1,10 @@
+year: 조사연도
+total_assets: 자산
+financial_assets: 자산_금융자산
+real_estate_assets: 자산_실물자산_부동산금액
+rental_real_estate_assets: 자산_실물자산_부동산_거주주택이외부동산금액
+owner_occupied_home_assets: 자산_실물자산_부동산_거주주택금액
+rental_deposit_liability: 부채_임대보증금
+financial_debt: 부채_금융부채
+survey_weight: 가중값
+region: 수도권여부

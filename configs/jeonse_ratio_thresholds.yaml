@@ -1,0 +1,5 @@
+safe: 0.60
+caution: 0.70
+danger: 0.80
+thresholds: [0.60, 0.70, 0.80, 0.90, 1.00]
+stress_haircuts: [0.05, 0.10, 0.20, 0.30]

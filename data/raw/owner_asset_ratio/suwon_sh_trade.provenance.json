@@ -1,0 +1,19 @@
+{
+  "source_kind": "official_rtms",
+  "rows": 1697,
+  "sources": [
+    "data\\raw\\owner_asset_ratio\\suwon_sh_trade_202201_202406.csv",
+    "data\\raw\\owner_asset_ratio\\suwon_sh_trade_202407_202607.csv"
+  ],
+  "deduplicated_rows": 53,
+  "months": [
+    "202201",
+    "202607"
+  ],
+  "sigungu_codes": [
+    "41111",
+    "41113",
+    "41115",
+    "41117"
+  ]
+}

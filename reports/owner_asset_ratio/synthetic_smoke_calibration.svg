@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="560"
+viewBox="0 0 560 560" role="img" aria-label="Prediction interval calibration">
+<rect width="560" height="560" fill="white"/>
+<text x="280" y="28" text-anchor="middle" font-size="18">
+Prediction interval coverage (synthetic_smoke_only)</text>
+<line x1="60" y1="500" x2="500" y2="500" stroke="#333"/>
+<line x1="60" y1="500" x2="60" y2="60" stroke="#333"/>
+<line x1="60" y1="500" x2="480" y2="80" stroke="#999" stroke-dasharray="6 5"/>
+<text x="280" y="540" text-anchor="middle">Nominal coverage</text>
+<text x="16" y="280" transform="rotate(-90 16 280)" text-anchor="middle">
+Empirical coverage</text>
+<circle cx="270.0" cy="289.6" r="7" fill="#FFBC00"><title>deposit: nominal=0.5, empirical=0.5009345794392523</title></circle><circle cx="396.0" cy="162.4" r="7" fill="#FFBC00"><title>deposit: nominal=0.8, empirical=0.8037383177570093</title></circle><circle cx="270.0" cy="287.7" r="7" fill="#2F7ED8"><title>property_value: nominal=0.5, empirical=0.5055762081784386</title></circle><circle cx="396.0" cy="161.2" r="7" fill="#2F7ED8"><title>property_value: nominal=0.8, empirical=0.8066914498141264</title></circle>
+<rect x="350" y="36" width="12" height="12" fill="#FFBC00"/>
+<text x="368" y="47">deposit</text>
+<rect x="430" y="36" width="12" height="12" fill="#2F7ED8"/>
+<text x="448" y="47">value</text>
+</svg>

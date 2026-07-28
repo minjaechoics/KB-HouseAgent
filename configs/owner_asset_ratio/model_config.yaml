@@ -1,0 +1,25 @@
+version: 1
+random_seed: 20260728
+monte_carlo_samples: 20000
+quantiles: [0.1, 0.25, 0.5, 0.75, 0.9]
+split:
+  train_through: 202412
+  validation_start: 202501
+  validation_end: 202512
+  test_start: 202601
+  spatial_holdout_fraction: 0.2
+occupancy:
+  low: {alpha: 7.0, beta: 3.0}
+  baseline: {alpha: 17.0, beta: 3.0}
+  high: {alpha: 19.0, beta: 1.0}
+building_random_effect:
+  sigma_log: 0.12
+  scenarios: [0.0, 0.12, 0.25]
+owner_asset_prior:
+  min_group_size: 30
+  epsilon: 0.000001
+  fallback_order:
+    - exact_group
+    - relaxed_asset_band
+    - capital_region_landlords
+    - national_landlords

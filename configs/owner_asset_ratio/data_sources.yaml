@@ -1,0 +1,33 @@
+version: 1
+region:
+  name: 수원시
+  sigungu_codes:
+    "41111": 장안구
+    "41113": 권선구
+    "41115": 팔달구
+    "41117": 영통구
+
+building_registry:
+  provider: 국토교통부 건축HUB 건축물대장정보
+  endpoint: https://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo
+  api_key_env: MOLIT_BUILDING_HUB_KEY
+  format: json
+  source_kind: official_public_api
+
+lease_rtms:
+  provider: 국토교통부 단독/다가구 전월세 실거래가
+  endpoint: https://apis.data.go.kr/1613000/RTMSDataSvcSHRent/getRTMSDataSvcSHRent
+  api_key_env: MOLIT_SERVICE_KEY
+  source_kind: official_public_api
+
+sale_rtms:
+  provider: 국토교통부 단독/다가구 매매 실거래가
+  endpoint: https://apis.data.go.kr/1613000/RTMSDataSvcSHTrade/getRTMSDataSvcSHTrade
+  api_key_env: MOLIT_SERVICE_KEY
+  source_kind: official_public_api
+
+household_survey:
+  provider: 통계청 가계금융복지조사 마이크로데이터
+  access: user_supplied_mdis_microdata
+  source_kind: restricted_microdata
+  direct_building_join_allowed: false

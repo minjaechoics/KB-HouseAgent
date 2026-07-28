@@ -1,0 +1,37 @@
+{
+  "model_name": "four_component_owner_asset_ratio_v1",
+  "data_kind": "actual",
+  "building_id": "HUB-8afd698677db742af7bb",
+  "samples": 20000,
+  "seed": 20260728,
+  "estimated_total_deposit": {
+    "p10": 43248.28,
+    "p50": 72336.61,
+    "p90": 116545.66
+  },
+  "estimated_owner_total_assets": {
+    "p10": 120483.18,
+    "p50": 230298.71,
+    "p90": 490608.03
+  },
+  "deposit_to_total_assets_ratio": {
+    "p10": 0.13,
+    "p50": 0.30,
+    "p90": 0.70
+  },
+  "probability_ratio_over_0_6": 0.15035,
+  "probability_ratio_over_0_8": 0.06575,
+  "probability_ratio_over_1_0": 0.0278,
+  "data_quality": "high",
+  "owner_prior_fallback_counts": {
+    "exact_group": 20000
+  },
+  "uncertainty_contribution": {
+    "room_count": 0.04,
+    "occupancy": 0.04,
+    "deposit_distribution": 0.3498,
+    "property_value": 0.5245,
+    "owner_other_assets": 0.0455
+  },
+  "warning": "특정 집주인의 실제 금융·부동산 자산을 조회한 결과가 아니라 공개정보와 임대인 모집단 자산분포를 결합한 확률적 추정치다."
+}

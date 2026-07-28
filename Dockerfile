@@ -20,6 +20,7 @@ RUN useradd --create-home --uid 10001 appuser
 COPY --chown=appuser:appuser src ./src
 COPY --chown=appuser:appuser models ./models
 COPY --chown=appuser:appuser data/generated ./data/generated
+COPY --chown=appuser:appuser data/processed/owner_asset_ratio/buildings.csv ./data/processed/owner_asset_ratio/buildings.csv
 COPY --chown=appuser:appuser data/downloaded/safety ./data/downloaded/safety
 COPY --chown=appuser:appuser data/downloaded/facilities ./data/downloaded/facilities
 COPY --chown=appuser:appuser data/downloaded/finance_policies ./data/downloaded/finance_policies

@@ -1,0 +1,13 @@
+# MDIS에서 받은 연도별 코드북을 확인한 뒤 오른쪽 값을 실제 열 이름으로 바꾸십시오.
+# 이 예제값은 변수명이 아니며 모델은 PLACEHOLDER가 남아 있으면 실행을 거부합니다.
+year: 2025
+total_assets: PLACEHOLDER
+financial_assets: PLACEHOLDER
+real_estate_assets: PLACEHOLDER
+rental_real_estate_assets: PLACEHOLDER
+owner_occupied_home_assets: PLACEHOLDER
+rental_deposit_liability: PLACEHOLDER
+financial_debt: PLACEHOLDER
+survey_weight: PLACEHOLDER
+region: PLACEHOLDER
+home_count: PLACEHOLDER

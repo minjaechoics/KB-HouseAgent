@@ -505,11 +505,11 @@ class JeonseAgent:
             "lease_type": r["lease_type"],
             "transaction_type": r.get("transaction_type"),
             "property_type": r.get("property_type") or r.get("house_type"),
-            "deposit_manwon": float(r["deposit_manwon"]),
+            "deposit_manwon": float(r.get("deposit_manwon") or 0),
             "sale_price_manwon": float(r.get("sale_price_manwon", 0) or
                                         r.get("asking_price_manwon", 0) or 0),
-            "monthly_rent_manwon": float(r.get("monthly_rent_manwon", 0)),
-            "maintenance_fee_manwon": float(r.get("maintenance_fee_manwon", 0)),
+            "monthly_rent_manwon": float(r.get("monthly_rent_manwon") or 0),
+            "maintenance_fee_manwon": float(r.get("maintenance_fee_manwon") or 0),
             "fraud_score": (None if fs is None or (isinstance(fs, float) and fs != fs)
                             else round(float(fs), 3)),
             "missing_conditions": r.get("missing_desc", []),

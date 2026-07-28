@@ -1,0 +1,87 @@
+{
+  "model_name": "four_component_owner_asset_ratio_v1",
+  "model_version": "four_component_owner_asset_ratio_v1",
+  "data_kind": "synthetic_smoke_only",
+  "building_id": "SYN-B-00000",
+  "samples": 20000,
+  "seed": 20260728,
+  "estimated_total_deposit": {
+    "p10": 85262.19,
+    "p50": 118566.74,
+    "p90": 157897.03
+  },
+  "estimated_owner_total_assets": {
+    "p10": 135558.73,
+    "p50": 186864.92,
+    "p90": 297513.33
+  },
+  "deposit_to_total_assets_ratio": {
+    "p10": 0.36,
+    "p50": 0.63,
+    "p90": 0.97
+  },
+  "probability_ratio_over_0_6": 0.5436,
+  "probability_ratio_over_0_8": 0.2474,
+  "probability_ratio_over_1_0": 0.08575,
+  "building_only_ratio": {
+    "p10": 0.75,
+    "p50": 1.07,
+    "p90": 1.47
+  },
+  "net_asset_ratio_auxiliary": {
+    "p10": 0.42,
+    "p50": 0.73,
+    "p90": 1.17
+  },
+  "data_quality": "low",
+  "assumptions": [
+    "registered units source=estimated:lightgbm_poisson",
+    "occupancy Beta(17.0,3.0)",
+    "shared-building log random effect sigma=0.12",
+    "K is a conditional landlord-population prior, not the observed owner's other assets",
+    "the target building approximates the owner's rental real estate"
+  ],
+  "warnings": [
+    "이 값은 특정 집주인의 실제 금융·부동산 자산을 조회한 결과가 아니다. 대상 건물의 추정 보증금·가치와 임대인 가구의 통계적 자산분포를 결합한 확률적 추정치다.",
+    "현재 artifact는 합성 smoke 검증용이다. 실제 수원시 추정치로 사용하거나 성능을 실제 성능으로 보고하면 안 된다.",
+    "공부상 호실 수가 없어 확률모델로 추정했다.",
+    "수원시 법정동 최근 임대차·매매 표본이 부족하다."
+  ],
+  "sensitivity_scenarios": {
+    "building_only_k0": {
+      "p10": 0.75,
+      "p50": 1.07,
+      "p90": 1.47
+    },
+    "conditional_owner_prior": {
+      "p10": 0.36,
+      "p50": 0.63,
+      "p90": 0.97
+    },
+    "high_asset_buffer": {
+      "p10": 0.29,
+      "p50": 0.42,
+      "p90": 0.57
+    },
+    "occupancy_scenario": "baseline",
+    "building_random_effect_sigma": 0.12
+  },
+  "owner_prior_fallback_counts": {
+    "exact_group": 20000
+  },
+  "uncertainty_contribution": {
+    "room_count": 0.0,
+    "occupancy": 0.0,
+    "deposit_distribution": 0.0,
+    "property_value": 0.1699,
+    "owner_other_assets": 0.8301
+  },
+  "provenance": {
+    "building_registry": "synthetic_smoke_only",
+    "lease_rtms": "synthetic_smoke_only",
+    "sale_rtms": "synthetic_smoke_only",
+    "household_survey": "synthetic_smoke_only",
+    "direct_owner_wealth_label": false,
+    "direct_building_survey_join": false
+  }
+}

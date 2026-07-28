@@ -7,6 +7,7 @@ from src.market_forecast import HousePriceForecaster
 from src.report.budget import simulate
 from src.report.service import PropertyReportService
 from src.fraud_risk.infer import FraudRiskScorer
+from src.senior_deposit import SeniorDepositIntegrationService
 
 
 def _user():
@@ -19,7 +20,13 @@ def test_trained_house_price_model_has_holdout_metadata():
         "house_type": "아파트", "legal_dong_code": "1111010100",
         "sido": "서울특별시", "gugun": "종로구",
     })
-    assert result["model_version"] == "rtms_calendar_3month_gbdt_news_v3"
+    assert result["model_version"] == "rtms_walkforward_conformal_v4"
+    assert result["news_numeric_effect_applied"] is False
+    assert result["annual_low_95"] <= result["annual_growth_rate"] <= result["annual_high_95"]
+    assert result["training"]["walk_forward"]["selected_base_model"] in {
+        "seasonal_naive", "ridge", "hist_gbdt", "lightgbm"
+    }
+    assert result["training"]["conformal"]["empirical_coverage_95"] >= .90
     assert result["training"]["rows"] > 0
     assert result["training"]["inference_feature_month_max"] >= \
         result["training"]["training_target_month_max"]
@@ -145,3 +152,98 @@ def test_gui_renders_llm_long_text_and_risk_explanation_safely():
                   "renderContractRisk", "LLM 근거 설명", "llm-rich-line"):
         assert token in gui
     assert "role==='ai'?richLlmText(text):esc(text)" in gui
+
+
+def test_senior_deposit_integration_marks_non_registry_input_low_confidence():
+    import sqlite3
+
+    connection = sqlite3.connect(config.DB_PATH)
+    connection.row_factory = sqlite3.Row
+    rows = connection.execute(
+        "SELECT * FROM properties WHERE transaction_type IN ('전세','월세')"
+    ).fetchall()
+    connection.close()
+    service = SeniorDepositIntegrationService()
+    matched = next(
+        (dict(row) for row in rows
+         if service.match_property(dict(row)).get("matched")),
+        None,
+    )
+    assert matched is not None
+    result = service.analyze_property(
+        matched, reference_date="2026-07-28", samples=1_000, seed=42)
+
+    assert result["available"] is True
+    assert result["match"]["method"] == "exact_normalized_road_address"
+    assert result["match"]["confidence"] == "exact"
+    assert result["estimate"]["model_mode"] == "scenario_only"
+    assert result["decision_support"]["risk_score_changed"] is False
+    assert result["decision_support"]["target_deposit_won"] >= 0
+    assert result["decision_support"][
+        "existing_deposit_conservative_p95_won"] >= 0
+    assert "combined_deposit_exposure_p95_won" not in result["decision_support"]
+
+    unmatched = dict(matched)
+    unmatched["road_address"] = "경기도 수원시 팔달구 존재하지않는로 99999"
+    missing = service.analyze_property(
+        unmatched, reference_date="2026-07-28", samples=1_000, seed=42)
+    assert missing["available"] is True
+    assert missing["status"] == "estimated_from_listing_features"
+    assert missing["match"]["method"] == (
+        "listing_features_without_registry_match")
+    assert missing["match"]["confidence"] == "low"
+    assert missing["match"]["registry_exact_match"] is False
+
+
+def test_gui_and_docker_include_integrated_senior_deposit_evidence():
+    root = Path(__file__).parents[1]
+    gui = (root / "src" / "server" / "gui.html").read_text(encoding="utf-8")
+    dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+    for value in (
+        "renderSeniorDeposit", "기존 임차보증금 추정",
+        "기존 임차보증금 · 보수 P95", "선택 매물의 내 보증금",
+        "건축HUB 정확주소", "어떻게 추정되었나요?",
+        "금융상품 미적용", "누적 순자산 (만원)", "나이 (세)",
+        "hedgehog-stage", "KB 금융상품",
+    ):
+        assert value in gui
+    assert "data/processed/owner_asset_ratio/buildings.csv" in dockerfile
+
+
+def test_final_assessment_never_calls_dangerous_contract_safe():
+    service = PropertyReportService.__new__(PropertyReportService)
+    service.llm = None
+    result = service._final_assessment(
+        {"transaction_type": "전세", "fraud_score": .92},
+        {"funding": {
+            "simulation_valid": True,
+            "verdict_title": "자금조달 가능",
+            "verdict_message": "예산 범위입니다.",
+        }},
+        {
+            "annual_growth_rate": .03,
+            "price_history": {"available": True},
+            "news": {"relevant_count": 1},
+            "market_assessment": {"label": "positive"},
+        },
+        {"safety_score": 90, "grade": "안전"},
+        {"convenience_score": 90, "grade": "우수"},
+        {
+            "risk_explanation": {"model_evidence": {
+                "score": .92,
+                "grade": "위험",
+                "formula": "선택 전세보증금 / 추정 집주인 총자산",
+                "method": (
+                    "target_jeonse_deposit/"
+                    "estimated_owner_total_assets"
+                ),
+                "property_facts": {},
+            }},
+            "senior_deposit": {"available": False},
+        },
+    )
+
+    assert result["recommendation"] == "avoid"
+    assert "위험" in result["summary"]
+    assert "우수" not in result["summary"]
+    assert "낮" not in result["summary"]
