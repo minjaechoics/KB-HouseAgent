@@ -42,6 +42,25 @@ def test_rule_plan_supports_sale_and_house_type():
     assert any(c["tool"] == "property_search" for c in plan.tool_calls)
 
 
+def test_rule_plan_routes_decision_support_questions():
+    planner = Planner()
+    assert planner.plan(
+        "수원에서 내 예산과 대출로 제일 좋은 집은?"
+    ).intent == "goal_best_affordable"
+    assert planner.plan(
+        "여기 말고 예산 맞는 다른 동네도 있을까?"
+    ).intent == "goal_alternative_areas"
+    assert planner.plan(
+        "전세가 좋을까 월세가 좋을까?"
+    ).intent == "qa_lease_compare"
+    assert planner.plan(
+        "이 동네 집값 앞으로 오를까 내릴까?"
+    ).intent == "qa_market"
+    assert planner.plan(
+        "지금 사는 게 나을까 1~2년 기다리는 게 나을까?"
+    ).intent == "qa_buy_or_wait"
+
+
 def test_sql_validator_rejects_prompt_injection_shapes():
     tool = PropertyDBTool()
     bad = [
@@ -200,6 +219,25 @@ def test_api_plan_repairs_compound_finance_goal_misclassification():
 
     assert plan.intent == "goal_financed_jeonse"
     assert plan.qa_args["finance_mode"] == "eligibility"
+    assert [call["tool"] for call in plan.tool_calls] == [
+        "finance_search", "property_search",
+    ]
+
+
+def test_api_plan_repairs_best_affordable_goal_misclassification():
+    llm = object.__new__(APILLM)
+    llm.provider = "test"
+    llm.model = "test-model"
+    llm.fallback = Planner()
+    llm.last_trace = []
+    llm._request_json = lambda **_: {
+        "intent": "recommend", "action": "confirm", "clarify_message": None,
+        "slots": {}, "tool_calls": [{"tool": "property_search"}],
+        "qa_args": {"finance_mode": None},
+    }
+    plan = llm.plan("수원에서 내 예산과 대출로 제일 좋은 집은?")
+    assert plan.intent == "goal_best_affordable"
+    assert plan.action == "proceed"
     assert [call["tool"] for call in plan.tool_calls] == [
         "finance_search", "property_search",
     ]

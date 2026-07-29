@@ -29,12 +29,16 @@ from src.preference.affordability import compute_affordability
 from src.tools.map_tool import MapTool
 from src.tools.finance_tool import FinanceTool
 from src.tools.property_db_tool import PropertyDBTool
-from src.tools.advisory_tools import contract_checklist, lease_compare, cost_breakdown
-from src.tools.external_tools import POISearchTool, MarketPriceTool
+from src.tools.advisory_tools import contract_checklist, cost_breakdown
+from src.tools.external_tools import POISearchTool
 from src.tools.safety_tool import SafetyTool
 from src.tools.convenience_tool import ConvenienceTool
 from src.tools.registry_tool import registry_check_guide
 from src.recommender import models as R
+from src.optimization import optimize_housing_choices
+from src.preferences import normalize_preferences
+from src.report.budget import simulate as simulate_asset_budget
+from src.simulation.monte_carlo import simulate_probabilistic
 
 # 랜드마크 좌표(데모). 실서비스는 지오코딩 API로 대체.
 LANDMARKS = {
@@ -154,7 +158,6 @@ class JeonseAgent:
         self.finance_tool = FinanceTool()
         self.db_tool = PropertyDBTool()
         self.poi_tool = POISearchTool()
-        self.market_tool = MarketPriceTool()
         self.safety_tool = SafetyTool()
         self.convenience_tool = ConvenienceTool()
         self.text2sql = Text2SQLPipeline(self.llm, self.db_tool, self.finance_tool)
@@ -185,13 +188,22 @@ class JeonseAgent:
     # ------------------------------------------------------------------
     # 진입점: 한 턴 처리
     # ------------------------------------------------------------------
-    def handle(self, session: dict, text: str) -> dict:
+    def handle(self, session: dict, text: str,
+               *, direct_recommend: bool = False) -> dict:
         """
         사용자 발화 한 턴 처리 → 응답 dict.
         응답 status: clarify | confirm | recommendation | qa | cancelled | error
         """
+        # 지도 조건 추가는 별도 버튼 흐름에서 승인한다. 상담 채널의 직접 추천은
+        # 이전 CLI식 "응" 확인 상태를 이어받지 않는다.
+        if direct_recommend and session.get("stage") == "awaiting_confirmation":
+            session["stage"] = "idle"
+            session["pending_slots"] = None
+            session["pending_info"] = None
+            session["pending_trace"] = None
+
         # 확인 대기 중이면 확인 응답 우선 처리
-        if session.get("stage") == "awaiting_confirmation":
+        if not direct_recommend and session.get("stage") == "awaiting_confirmation":
             verdict = parse_confirmation(text)
             if verdict == "yes":
                 trace = copy.deepcopy(session.get("pending_trace") or {
@@ -230,6 +242,10 @@ class JeonseAgent:
                 + f"\n현재 사용자의 후속 요청: {text}"
             )
         plan = self.llm.plan(planning_text)
+        if direct_recommend and plan.intent == "recommend" and plan.action == "confirm":
+            plan.action = "proceed"
+            plan.metadata = dict(plan.metadata or {})
+            plan.metadata["advisor_direct_execution"] = True
         if context_used:
             plan.metadata = dict(plan.metadata or {})
             plan.metadata["conversation_context_used"] = context_used
@@ -252,6 +268,13 @@ class JeonseAgent:
             session["last_intent"] = plan.intent
             session["last_qa_args"] = copy.deepcopy(plan.qa_args)
             return self._handle_financed_jeonse_goal(session, plan, text, trace)
+        if plan.intent in {"goal_best_affordable", "goal_alternative_areas"}:
+            session["last_intent"] = plan.intent
+            session["last_qa_args"] = copy.deepcopy(plan.qa_args)
+            return self._handle_affordable_optimization_goal(
+                session, plan, text, trace,
+                alternative=plan.intent == "goal_alternative_areas",
+            )
 
         # Q&A 의도 처리
         if plan.intent.startswith("qa_"):
@@ -664,17 +687,33 @@ class JeonseAgent:
 
         if intent == "qa_contract":
             cc = contract_checklist(args.get("lease_type", "전세"), is_multi_family=True)
+            report = session.get("last_property_report") or {}
+            contract = report.get("contract_safety")
+            if contract:
+                trace["tools"].append({
+                    "tool": "selected_property_contract_safety",
+                    "property_id": (report.get("property") or {}).get("property_id"),
+                    "evidence": [
+                        "fraud_risk", "senior_deposit",
+                        "owner_asset_ratio", "guarantee_review",
+                    ],
+                })
             return self._finalize(text, {"status": "qa", "qa_type": "contract",
-                                         "checklist": cc}, trace)
+                    "message": (
+                        "선택한 매물의 위험모델 결과와 계약 체크리스트를 함께 확인했습니다."
+                        if contract else
+                        "선택한 매물이 없어 일반 계약 체크리스트를 안내합니다."
+                    ),
+                    "checklist": cc, "contract_safety": contract,
+                    "property": report.get("property") if contract else None}, trace)
 
         if intent == "qa_lease_compare":
-            aff = compute_affordability(user)
-            cmp = lease_compare(
-                jeonse_deposit_manwon=aff.recommended_jeonse_deposit_manwon,
-                monthly_deposit_manwon=aff.recommended_monthly_deposit_manwon,
-                monthly_rent_manwon=aff.recommended_monthly_rent_manwon)
-            return self._finalize(text, {"status": "qa", "qa_type": "lease_compare",
-                                         "comparison": cmp}, trace)
+            comparison = self._lease_monte_carlo_comparison(session, trace)
+            return self._finalize(text, {
+                "status": "qa", "qa_type": "lease_compare",
+                "message": comparison["summary"],
+                "lease_monte_carlo": comparison,
+            }, trace)
 
         if intent == "qa_cost":
             # 마지막 추천 매물이 있으면 그것, 없으면 적정예산 기준 예시
@@ -695,11 +734,54 @@ class JeonseAgent:
                     "note": "특정 매물 주변으로 조회하려면 매물을 선택해 주세요."}, trace)
 
         if intent == "qa_market":
+            report = session.get("last_property_report") or {}
+            if report.get("property") and report.get("forecast"):
+                forecast = report["forecast"]
+                market = {
+                    "property": report["property"],
+                    "annual_growth_rate": forecast.get("annual_growth_rate"),
+                    "annual_low": forecast.get("annual_low"),
+                    "annual_high": forecast.get("annual_high"),
+                    "direction": (
+                        "상승" if float(forecast.get("annual_growth_rate") or 0) > 0
+                        else "하락" if float(forecast.get("annual_growth_rate") or 0) < 0
+                        else "보합"
+                    ),
+                    "price_history": forecast.get("price_history"),
+                    "news": forecast.get("news"),
+                    "market_assessment": forecast.get("market_assessment"),
+                    "model_version": forecast.get("model_version"),
+                }
+                trace["tools"].append({
+                    "tool": "selected_property_market_forecast",
+                    "property_id": report["property"].get("property_id"),
+                    "time_series_available": bool(
+                        (forecast.get("price_history") or {}).get("available")),
+                })
+                return self._finalize(text, {
+                    "status": "qa", "qa_type": "market",
+                    "message": "선택한 매물 지역의 실거래 시계열과 뉴스 조정 전망입니다.",
+                    "market_outlook": market,
+                }, trace)
             return self._finalize(text, {"status": "qa", "qa_type": "market",
-                    "message": "시세 적정성은 매물을 선택하면 실거래가와 비교해 드려요.",
-                    "example": self.market_tool.appraise("서울", "관악구", 33,
-                                                          asking_deposit_manwon=2400,
-                                                          market_price_manwon=3000)}, trace)
+                    "message": (
+                        "어느 동네를 뜻하는지 확인하려면 지도에서 매물 하나를 먼저 선택해 "
+                        "주세요. 선택 후 실거래 시계열과 관련 뉴스로 전망하겠습니다."
+                    ),
+                    "needs_property_selection": True}, trace)
+
+        if intent == "qa_buy_or_wait":
+            analysis = self._buy_or_wait(session)
+            trace["tools"].append({
+                "tool": "buy_now_vs_wait",
+                "status": analysis.get("status"),
+                "horizons_years": [1, 2],
+            })
+            return self._finalize(text, {
+                "status": "qa", "qa_type": "buy_or_wait",
+                "message": analysis["message"],
+                "buy_or_wait": analysis,
+            }, trace)
 
         if intent == "qa_registry":
             return self._finalize(text, {"status": "qa", "qa_type": "registry",
@@ -721,6 +803,353 @@ class JeonseAgent:
 
         return self._finalize(text, {"status": "qa", "qa_type": "unknown",
                 "message": "그 부분은 아직 도와드리기 어려워요. 매물 추천/계약/시세/금융 관련으로 물어봐 주세요."}, trace)
+
+    @staticmethod
+    def _diverse_property_pool(rows: list[dict], limit: int = 60) -> list[dict]:
+        """한 동의 매물만 먼저 잘리지 않도록 동별 round-robin 후보를 만든다."""
+        buckets: dict[str, list[dict]] = {}
+        for row in rows:
+            buckets.setdefault(str(row.get("dong") or "기타"), []).append(row)
+        result: list[dict] = []
+        while len(result) < limit and any(buckets.values()):
+            for dong in sorted(buckets):
+                if buckets[dong] and len(result) < limit:
+                    result.append(buckets[dong].pop(0))
+        return result
+
+    def _handle_affordable_optimization_goal(
+        self, session: dict, plan: Plan, text: str, trace: dict,
+        *, alternative: bool,
+    ) -> dict:
+        """금융상품→매물 교집합→MILP/Pareto 대표점의 실제 상담 경로."""
+        user = session["user"]
+        region = plan.slots.get("region_sido") or user.get("preferred_sido")
+        gugun = plan.slots.get("region_gugun") or user.get("preferred_gugun")
+        db_slots: dict = {"limit": 500}
+        transaction = plan.slots.get("transaction_type")
+        initial_transactions = [
+            value for value in (user.get("transaction_types") or [])
+            if value in {"매매", "전세", "월세"}
+        ]
+        if not transaction and len(initial_transactions) == 1:
+            transaction = initial_transactions[0]
+        if transaction:
+            db_slots.update(
+                transaction_type=transaction, lease_type=transaction)
+        if region:
+            db_slots["sido"] = region
+        if gugun:
+            db_slots["gugun"] = gugun
+        current_intersection = list(
+            (session.get("map_ui") or {}).get("last_search_properties") or [])
+        if current_intersection:
+            rows = current_intersection
+            property_trace = {
+                "strategy": "current_map_intersection",
+                "row_count": len(rows),
+                "validation": "already_validated_initial_and_ai_intersection",
+                "fallback": False,
+            }
+        else:
+            rows, property_trace = self.text2sql.search_properties(
+                text, db_slots, limit=500)
+        if initial_transactions and not plan.slots.get("transaction_type"):
+            rows = [
+                row for row in rows
+                if row.get("transaction_type") in initial_transactions]
+        initial_house_types = set(user.get("house_types") or [])
+        if initial_house_types:
+            rows = [
+                row for row in rows
+                if (row.get("house_type") in initial_house_types
+                    or row.get("property_type") in initial_house_types)]
+        for field in (
+            "max_deposit_manwon", "max_sale_price_manwon",
+            "max_monthly_rent_manwon", "max_maintenance_manwon",
+        ):
+            limit_value = user.get(field)
+            if limit_value is None:
+                continue
+            property_field = {
+                "max_deposit_manwon": "deposit_manwon",
+                "max_sale_price_manwon": "sale_price_manwon",
+                "max_monthly_rent_manwon": "monthly_rent_manwon",
+                "max_maintenance_manwon": "maintenance_fee_manwon",
+            }[field]
+            rows = [
+                row for row in rows
+                if float(row.get(property_field) or 0) <= float(limit_value)]
+        trace["tools"].append({"tool": "property_text2sql", **property_trace})
+
+        excluded_dong = None
+        if alternative:
+            current = (
+                (session.get("last_property_report") or {}).get("property")
+                or (session.get("last_recommended_properties") or [None])[0]
+                or {}
+            )
+            excluded_dong = current.get("dong")
+            if excluded_dong:
+                rows = [row for row in rows if row.get("dong") != excluded_dong]
+        pool = self._diverse_property_pool(rows, limit=60)
+
+        finance_region = " ".join(str(value) for value in (region, gugun)
+                                  if value)
+        programs = self.finance_tool.search(
+            user_income_manwon=user.get("monthly_income_manwon"),
+            user_age=user.get("age"), region=finance_region or None,
+            finance_mode="eligibility", user_profile=user, limit=50,
+        )
+        trace["tools"].append({
+            "tool": "finance_search", "finance_mode": "eligibility",
+            "row_count": len(programs),
+        })
+        optimization = optimize_housing_choices(
+            pool, programs, user,
+            normalize_preferences(user.get("preferences")),
+            {"horizon_years": 10},
+        )
+        trace["tools"].append({
+            "tool": "pareto_milp_optimizer",
+            "property_count": len(pool), "finance_count": len(programs),
+            "status": optimization.get("status"),
+            "candidate_count": optimization.get("candidates_evaluated", 0),
+            "pareto_count": optimization.get("pareto_candidate_count", 0),
+        })
+        trace["workflow"] = {
+            "goal": (
+                "같은 예산의 대안 동네 추천" if alternative
+                else "대출 포함 감당 가능한 최적 매물 추천"
+            ),
+            "steps": [
+                "eligible_finance_rag", "property_intersection_max_60",
+                "property_finance_loan_grid", "pareto_front", "milp_representatives",
+            ],
+        }
+        if optimization.get("status") != "ok":
+            return self._finalize(text, {
+                "status": "no_result",
+                "message": optimization.get("message"),
+                "optimization": optimization,
+                "searched_property_count": len(pool),
+            }, trace)
+
+        by_id = {str(row.get("property_id")): row for row in pool}
+        recommendations = []
+        for representative in optimization.get("representatives") or []:
+            row = by_id.get(str(representative.get("property_id")))
+            if not row:
+                continue
+            item = self._format_rec(row)
+            item.update({
+                "recommendation_profile": representative.get("profile"),
+                "selection_reason": representative.get("selection_reason"),
+                "finance_program_id": representative.get("finance_program_id"),
+                "finance_program_name": representative.get("finance_program_name"),
+                "loan_amount_manwon": representative.get("loan_amount_manwon"),
+                "monthly_housing_cost_manwon": representative.get(
+                    "monthly_housing_cost_manwon"),
+                "utility_score": representative.get("utility_score"),
+                "hard_constraints": representative.get("hard_constraints"),
+            })
+            recommendations.append(item)
+        session["last_recommended_properties"] = [
+            by_id[str(item["property_id"])] for item in recommendations
+            if str(item["property_id"]) in by_id
+        ]
+        return self._finalize(text, {
+            "status": "recommendation",
+            "recommendation_mode": (
+                "alternative_areas_pareto" if alternative
+                else "best_affordable_pareto"
+            ),
+            "message": (
+                f"현재 동({excluded_dong})을 제외하고 같은 자금·상환 제약을 만족하는 "
+                "대안 후보를 골랐습니다."
+                if alternative and excluded_dong else
+                "자기자금·예비 금융자격·월 상환액을 함께 적용해 목적별 최적 후보를 골랐습니다."
+            ),
+            "optimization": optimization,
+            "groups": {0: recommendations},
+            "excluded_dong": excluded_dong,
+            "searched_property_count": len(pool),
+            "finance_program_count": len(programs),
+        }, trace)
+
+    def _lease_monte_carlo_comparison(
+        self, session: dict, trace: dict,
+    ) -> dict:
+        user = session["user"]
+        affordability = compute_affordability(user)
+        region = " ".join(str(value) for value in (
+            user.get("preferred_sido"), user.get("preferred_gugun")) if value)
+        programs = self.finance_tool.search(
+            user_income_manwon=user.get("monthly_income_manwon"),
+            user_age=user.get("age"), region=region or None,
+            finance_mode="eligibility", user_profile=user, limit=50,
+        )
+        selected = (session.get("last_property_report") or {}).get("property") or {}
+        selected_transaction = selected.get("transaction_type")
+        representative = {
+            "전세": {
+                "property_id": "budget-representative-jeonse",
+                "transaction_type": "전세",
+                "deposit_manwon": affordability.recommended_jeonse_deposit_manwon,
+                "monthly_rent_manwon": 0.0,
+                "maintenance_fee_manwon": 7.0,
+            },
+            "월세": {
+                "property_id": "budget-representative-monthly",
+                "transaction_type": "월세",
+                "deposit_manwon": affordability.recommended_monthly_deposit_manwon,
+                "monthly_rent_manwon": affordability.recommended_monthly_rent_manwon,
+                "maintenance_fee_manwon": 7.0,
+            },
+        }
+        if selected_transaction in representative:
+            representative[selected_transaction] = {
+                **selected, "transaction_type": selected_transaction,
+            }
+        forecast = {
+            "annual_growth_rate": 0.0, "annual_low": -0.02,
+            "annual_high": 0.02,
+        }
+        scenarios: dict[str, dict] = {}
+        seed = 20260729
+        for transaction, prop in representative.items():
+            budget = simulate_asset_budget(
+                user, prop, forecast, programs, {"horizon_years": 10})
+            probabilistic = simulate_probabilistic(
+                user, prop, forecast, budget, {"horizon_years": 10},
+                paths=3000, seed=seed,
+            )
+            base = probabilistic["base"]
+            scenarios[transaction] = {
+                "property_basis": (
+                    "selected_property"
+                    if selected_transaction == transaction
+                    else "affordability_representative"
+                ),
+                "deposit_manwon": prop.get("deposit_manwon"),
+                "monthly_rent_manwon": prop.get("monthly_rent_manwon"),
+                "selected_finance_program": (
+                    budget.get("funding") or {}).get("chosen_program_name"),
+                "terminal_net_worth": base["terminal_net_worth"],
+                "ten_year_net_worth": base["ten_year_net_worth"],
+                "cash_depletion_probability": base[
+                    "cash_depletion_probability"],
+                "repayment_distress_probability": base[
+                    "repayment_distress_probability"],
+                "cvar_5_terminal_change_manwon": base[
+                    "cvar_5_terminal_change_manwon"],
+                "rate_plus_2pp": probabilistic["rate_plus_2pp"],
+            }
+        winner = max(
+            scenarios,
+            key=lambda key: float(
+                scenarios[key]["terminal_net_worth"]["p50"]))
+        gap = (
+            float(scenarios[winner]["terminal_net_worth"]["p50"])
+            - float(scenarios["월세" if winner == "전세" else "전세"][
+                "terminal_net_worth"]["p50"])
+        )
+        trace["tools"].append({
+            "tool": "lease_monte_carlo",
+            "model": "vectorized_monthly_monte_carlo_v1",
+            "path_count_per_option": 3000, "seed": seed,
+            "finance_program_count": len(programs),
+            "selected_property_used": bool(
+                selected_transaction in representative),
+        })
+        return {
+            "preferred": winner,
+            "p50_gap_manwon": round(gap, 1),
+            "summary": (
+                f"현재 입력과 10년·각 3,000개 경로 기준 중앙값은 {winner}가 "
+                f"약 {gap:,.0f}만원 우세합니다."
+            ),
+            "scenarios": scenarios,
+            "path_count_per_option": 3000,
+            "horizon_years": 10,
+            "basis": (
+                "선택 매물과 적정예산 대표 시나리오 비교"
+                if selected_transaction in representative
+                else "특정 매물이 아닌 사용자 적정예산 대표 시나리오 비교"
+            ),
+            "disclaimer": (
+                "P10·P50·P90과 스트레스 결과는 입력 가정에 따른 모형 분포이며 "
+                "실제 수익이나 대출승인을 보장하지 않습니다."
+            ),
+        }
+
+    def _buy_or_wait(self, session: dict) -> dict:
+        report = session.get("last_property_report") or {}
+        prop = report.get("property") or {}
+        forecast = report.get("forecast") or {}
+        if not prop or prop.get("transaction_type") != "매매" or not forecast:
+            return {
+                "status": "needs_purchase_property",
+                "message": (
+                    "비교할 매매 매물을 먼저 선택해 주세요. 선택한 집의 실거래 "
+                    "시계열·가격 전망과 기다리는 동안의 주거비를 함께 계산하겠습니다."
+                ),
+            }
+        price = float(
+            prop.get("sale_price_manwon")
+            or prop.get("asking_price_manwon") or 0)
+        growth = float(forecast.get("annual_growth_rate") or 0)
+        low = float(
+            forecast.get("annual_low")
+            if forecast.get("annual_low") is not None else growth)
+        high = float(
+            forecast.get("annual_high")
+            if forecast.get("annual_high") is not None else growth)
+        affordability = compute_affordability(session["user"])
+        wait_monthly = float(
+            affordability.recommended_monthly_rent_manwon)
+        horizons = []
+        for years in (1, 2):
+            projected = price * (1 + growth) ** years
+            low_price = price * (1 + low) ** years
+            high_price = price * (1 + high) ** years
+            wait_cost = wait_monthly * 12 * years
+            total_difference = projected - price + wait_cost
+            horizons.append({
+                "years": years,
+                "projected_price_manwon": round(projected, 1),
+                "price_interval_manwon": {
+                    "low": round(min(low_price, high_price), 1),
+                    "high": round(max(low_price, high_price), 1),
+                },
+                "estimated_wait_housing_cost_manwon": round(wait_cost, 1),
+                "extra_required_vs_buy_now_manwon": round(
+                    total_difference, 1),
+            })
+        two_year = horizons[-1]
+        recommendation = (
+            "buy_now" if two_year["extra_required_vs_buy_now_manwon"] > 0
+            else "wait"
+        )
+        return {
+            "status": "ok", "recommendation": recommendation,
+            "message": (
+                "기준 전망과 대기 중 주거비를 합치면 지금 매수가 상대적으로 유리합니다."
+                if recommendation == "buy_now" else
+                "기준 전망에서는 1~2년 대기가 상대적으로 유리하지만 예측구간을 확인해야 합니다."
+            ),
+            "property_id": prop.get("property_id"),
+            "current_price_manwon": round(price, 1),
+            "forecast": {
+                "annual_growth_rate": growth,
+                "annual_low": low, "annual_high": high,
+                "price_history": forecast.get("price_history"),
+                "news": forecast.get("news"),
+            },
+            "wait_cost_assumption": (
+                "사용자 적정 월세 × 대기 개월 수; 이사비·취득세 변화는 제외"
+            ),
+            "horizons": horizons,
+        }
 
     def _finalize(self, user_text: str, result: dict, trace: dict,
                   synthesize: bool = True) -> dict:

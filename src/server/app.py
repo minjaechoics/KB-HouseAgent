@@ -1319,6 +1319,56 @@ def chat(body: ChatIn):
         raise HTTPException(500, "상담 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
 
 
+def _enrich_advisor_recommendations(session: dict, result: dict) -> dict:
+    """Agent 추천 ID를 지도/카드에서 바로 쓸 수 있는 현재 DB 행으로 보강한다."""
+    groups = result.get("groups")
+    if not isinstance(groups, dict):
+        return result
+    enriched_groups: dict = {}
+    map_rows: list[dict] = []
+    seen: set[str] = set()
+    for key, values in groups.items():
+        enriched = []
+        for recommendation in values or []:
+            property_id = str((recommendation or {}).get("property_id") or "")
+            prop = _property_report.property(property_id) if property_id else None
+            if not prop:
+                enriched.append(recommendation)
+                continue
+            public = _property_report._public_property(prop)
+            public.update(recommendation)
+            enriched.append(public)
+            if property_id not in seen:
+                map_rows.append(public)
+                seen.add(property_id)
+        enriched_groups[key] = enriched
+    result["groups"] = enriched_groups
+    result["recommended_properties"] = map_rows
+    if map_rows:
+        ui = session.setdefault("map_ui", {})
+        ui["last_advisor_properties"] = copy.deepcopy(map_rows)
+    return result
+
+
+@app.post("/api/advisor/chat")
+def advisor_chat(body: ChatIn):
+    """조건 편집과 분리된 의사결정·즉시 추천 채널."""
+    session = _SESSIONS.get(body.session_id)
+    if session is None:
+        raise HTTPException(404, "session not found. POST /session first.")
+    try:
+        result = _agent.handle(
+            session, body.text, direct_recommend=True)
+        result = _enrich_advisor_recommendations(session, result)
+        result["advisor_channel"] = True
+        session["last_advisor_result"] = copy.deepcopy(result)
+        return result
+    except Exception:
+        logger.exception("advisor chat request failed")
+        raise HTTPException(
+            500, "AI 추천·상담을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.")
+
+
 @app.post("/fraud/score")
 def fraud_score(prop: dict):
     """단일 매물 위험도. body는 PropertyRecord 필드 dict."""

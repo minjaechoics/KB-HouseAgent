@@ -112,6 +112,124 @@ def test_financed_jeonse_goal_runs_multi_step_rag_and_ranking():
     assert all(program.get("goal_role") for program in result["finance_programs"])
 
 
+def test_lease_compare_uses_probabilistic_paths_not_one_line_conversion():
+    agent = JeonseAgent("rule")
+    session = agent.new_session({
+        "user_id": "LEASE-MC", "age": 29,
+        "monthly_income_manwon": 320, "total_asset_manwon": 8000,
+        "monthly_living_cost_manwon": 120, "income_decile": 5,
+        "preferred_sido": "경기", "preferred_gugun": "수원시 팔달구",
+    })
+    result = agent.handle(
+        session, "전세가 좋을까 월세가 좋을까?", direct_recommend=True)
+    assert result["status"] == "qa"
+    assert result["qa_type"] == "lease_compare"
+    comparison = result["lease_monte_carlo"]
+    assert comparison["path_count_per_option"] == 3000
+    assert set(comparison["scenarios"]) == {"전세", "월세"}
+    for scenario in comparison["scenarios"].values():
+        assert set(scenario["terminal_net_worth"]) >= {"p10", "p50", "p90"}
+    assert any(
+        item["tool"] == "lease_monte_carlo"
+        for item in result["agent_trace"]["tools"])
+
+
+def test_best_affordable_goal_calls_pareto_engine_directly():
+    agent = JeonseAgent("rule")
+    session = agent.new_session({
+        "user_id": "BEST-PARETO", "age": 29,
+        "monthly_income_manwon": 600, "total_asset_manwon": 50000,
+        "monthly_living_cost_manwon": 100, "income_decile": 5,
+        "preferred_sido": "경기", "preferred_gugun": "수원시 팔달구",
+        "preferences": {"mode": "balanced", "approved": True},
+    })
+    result = agent.handle(
+        session,
+        "수원에서 내 예산과 대출로 제일 좋은 집은?",
+        direct_recommend=True,
+    )
+    assert result["status"] == "recommendation"
+    assert result["recommendation_mode"] == "best_affordable_pareto"
+    assert result["optimization"]["status"] == "ok"
+    assert result["groups"][0]
+    tools = [item["tool"] for item in result["agent_trace"]["tools"]]
+    assert tools == [
+        "property_text2sql", "finance_search", "pareto_milp_optimizer"]
+
+
+def test_advisor_endpoint_returns_map_ready_recommendations():
+    from fastapi.testclient import TestClient
+    from src.server.app import app
+
+    with TestClient(app) as client:
+        session = client.post("/session", json={
+            "age": 29, "monthly_income_manwon": 600,
+            "total_asset_manwon": 50000,
+            "monthly_living_cost_manwon": 100,
+            "preferred_sido": "경기",
+            "preferred_gugun": "수원시 팔달구",
+        }).json()
+        response = client.post("/api/advisor/chat", json={
+            "session_id": session["session_id"],
+            "text": "수원에서 내 예산과 대출로 제일 좋은 집은?",
+        })
+    assert response.status_code == 200
+    result = response.json()
+    assert result["advisor_channel"] is True
+    assert result["status"] == "recommendation"
+    assert result["recommended_properties"]
+    first = result["recommended_properties"][0]
+    assert first["property_id"]
+    assert first["lat"] is not None and first["lng"] is not None
+
+
+def test_market_wait_and_contract_questions_reuse_selected_report():
+    agent = JeonseAgent("rule")
+    session = agent.new_session({
+        "user_id": "SELECTED-CONTEXT", "age": 30,
+        "monthly_income_manwon": 400, "total_asset_manwon": 12000,
+        "monthly_living_cost_manwon": 100, "income_decile": 5,
+        "preferred_sido": "경기", "preferred_gugun": "수원시 팔달구",
+    })
+    session["last_property_report"] = {
+        "property": {
+            "property_id": "selected-sale", "transaction_type": "매매",
+            "sale_price_manwon": 20000, "gugun": "수원시 팔달구",
+            "dong": "인계동",
+        },
+        "forecast": {
+            "annual_growth_rate": 0.02, "annual_low": -0.01,
+            "annual_high": 0.05,
+            "price_history": {"available": True, "series": [1, 2, 3]},
+            "news": {"relevant_headlines": []},
+        },
+        "contract_safety": {
+            "risk_explanation": {"score": 0.2},
+            "senior_deposit": {"available": True},
+            "owner_asset_ratio": {"available": True},
+        },
+    }
+    market = agent.handle(
+        session, "이 동네 집값 앞으로 오를까 내릴까?",
+        direct_recommend=True)
+    assert market["market_outlook"]["direction"] == "상승"
+    assert market["market_outlook"]["price_history"]["available"] is True
+
+    wait = agent.handle(
+        session, "지금 사는 게 나을까 1~2년 기다리는 게 나을까?",
+        direct_recommend=True)
+    assert wait["buy_or_wait"]["status"] == "ok"
+    assert [row["years"] for row in wait["buy_or_wait"]["horizons"]] == [1, 2]
+
+    contract = agent.handle(
+        session, "이 집 계약해도 안전한지 알려줘",
+        direct_recommend=True)
+    assert contract["contract_safety"]["senior_deposit"]["available"] is True
+    assert any(
+        item["tool"] == "selected_property_contract_safety"
+        for item in contract["agent_trace"]["tools"])
+
+
 def test_finance_goal_budget_excludes_unrelated_loan_products():
     from types import SimpleNamespace
     from src.agent.harness import _classify_goal_finance

@@ -1,6 +1,6 @@
 # 청년 주거·금융 Agentic Search System 아키텍처
 
-작성일: 2026-07-16  
+최종 갱신: 2026-07-29
 대상 코드: `jeonse_helper`
 
 ## 1. 구현 결과 요약
@@ -10,7 +10,8 @@
 
 1. **Planner**: 자연어를 의도, 정규화 슬롯, 도구 계획으로 변환한다.
 2. **Text-to-SQL**: 확인된 슬롯과 허용 스키마를 바탕으로 읽기 전용 SQL을 만든다.
-3. **Grounded Synthesizer**: DB와 도구가 실제로 반환한 결과만 사용해 답변을 작성한다.
+3. **Decision Engine**: Monte Carlo·MILP/Pareto·시장 전망·계약 위험모델을 실행한다.
+4. **Grounded Synthesizer**: DB와 도구가 실제로 반환한 결과만 사용해 답변을 작성한다.
 
 LLM이 계산이나 DB 접근을 직접 수행하지는 않는다. LLM은 계획과 SQL 문자열을
 제안하고, Python 오케스트레이터가 검증된 도구만 실행한다. 모든 실패는 재시도 후
@@ -27,7 +28,8 @@ flowchart LR
     G --> R[(부동산·금융 SQLite)]
     R --> A[ATOM 조건 검증·추천 순위화]
     M --> A
-    A --> S[LLM Grounded Synthesizer]
+    A --> D[Monte Carlo·Pareto MILP·시장/계약 판단]
+    D --> S[LLM Grounded Synthesizer]
     S --> X[답변 + 구조화 결과 + agent_trace]
 
     P -. 실패 .-> RP[규칙 Planner]
@@ -41,7 +43,7 @@ flowchart LR
 | 그림의 구성요소 | 실제 구현 | 주요 파일 |
 |---|---|---|
 | 자연어 기반 희망사항 | 의도·거래유형·지역·예산·주택유형·통근·안전 조건 추출 | `src/agent/prompts.py`, `src/agent/llm.py`, `src/agent/planner.py` |
-| 정량화된 사용자 정보 | 나이, 월소득, 자산, 생활비, 소득분위, 선호지역 세션 저장 | `src/schemas.py`, `src/agent/harness.py` |
+| 정량화된 사용자 정보 | 나이, 월소득, 자산, 생활비, 가족·직업·금융자격, 선호지역 세션 저장 | `src/schemas.py`, `src/agent/harness.py` |
 | Agentic Search System | 상태 관리, 확인 대화, 도구 선택, 실행, 검증, 폴백, 합성 | `src/agent/harness.py`의 `JeonseAgent` |
 | Tool Calling | 지도, POI, 안전, 편의, 금융, 시세, 등기 안내 도구 호출 | `src/tools/`, `src/agent/harness.py` |
 | Text2SQL | SQL 생성, 오류를 이용한 수정 재시도, 슬롯 SQL 폴백 | `src/agent/text2sql.py` |
@@ -51,6 +53,8 @@ flowchart LR
 | Naver Map API 영역 | API 키가 있으면 외부 길찾기, 없으면 로컬 거리 기반 근사 | `src/tools/map_tool.py` |
 | Direction API 영역 | `travel_time`, `regions_within` 인터페이스 | `src/tools/map_tool.py` |
 | 최종 자연어 응답 | 도구 결과만 주입하는 근거 기반 합성 | `src/agent/llm.py`의 `synthesize()` |
+| 전월세 의사결정 | 동일 입력으로 전세·월세 각 3,000개 확률 경로 비교 | `src/report/budget.py`, `src/simulation/monte_carlo.py`, `src/agent/harness.py` |
+| 대출 포함 최적 매물 | 매물×금융상품×대출액 조합 생성, Pareto front와 MILP 대표점 선택 | `src/optimization/service.py`, `src/agent/harness.py` |
 | 재시도·fallback | HTTP 오류 분류, 지수 백오프, 단계별 결정론 폴백 | `src/agent/reliability.py`, `src/agent/text2sql.py`, `src/agent/harness.py` |
 
 그림에 표시된 **Fine-tuned**는 현재 구현 상태와 다르다. 현재 OpenAI 모델은 별도
@@ -102,13 +106,26 @@ flowchart LR
 Structured Output의 `null` 값은 Python 변환 단계에서 제거한다. 모델이 추천 또는
 금융 검색 도구를 빠뜨리더라도 `_plan_from_data()`가 의도에 맞게 필수 도구를 보정한다.
 
-### 3.3 사용자 확인
+### 3.3 조건 편집과 AI 상담 채널 분리
+
+지도 UI는 의도에 따라 진입점을 분리한다.
+
+- **조건 추가**: `POST /api/conditions/draft`로 모호한 조건을 협상한다. 채팅의
+  “응”은 승인이 아니며 UI의 `조건 추가` 버튼을 눌렀을 때만 필터가 반영된다.
+- **AI 추천·상담**: `POST /api/advisor/chat`으로 의사결정 질문을 실행한다.
+  추천 목표는 CLI식 확인 대화 없이 금융 RAG·매물 RAG·최적화를 끝까지 수행하고,
+  추천 매물을 채팅과 지도에 즉시 표시한다.
+
+두 채널을 분리했기 때문에 “아주대 20분”은 조건 협상으로 처리되고,
+“내 예산과 대출로 제일 좋은 집”은 필터 초안이 아니라 실제 추천 결과로 처리된다.
+
+### 3.4 사용자 확인
 
 추천 조건이 하나라도 추출되면 바로 검색 결과를 확정하지 않고 `confirm` 상태를
 반환한다. 사용자가 확인하면 검색하고, 수정 내용을 말하면 기존 슬롯과 새 슬롯을
 병합한 후 다시 확인한다. `아무거나 추천해줘`만 확인 없이 실행한다.
 
-### 3.4 Text-to-SQL
+### 3.5 Text-to-SQL
 
 `Text2SQLPipeline.search_properties()`와 `search_finance()`가 담당한다.
 
@@ -168,6 +185,22 @@ LIMIT 500
    않는다.
 4. `property_text2sql`: 계산된 보증금 상한을 `WHERE deposit_manwon <= ...`로 넣어
    전세 매물을 RAG한다.
+
+#### 의사결정·투자 질문의 실제 실행 경로
+
+| 사용자 질문 | Planner 의도 | 실행 경로 | 결과 |
+|---|---|---|---|
+| 전세가 좋을까 월세가 좋을까? | `qa_lease_compare` | 적격 금융상품 → 전·월세 결정론 시뮬레이션 → 옵션별 3,000경로 Monte Carlo | 10년 순자산 P10/P50/P90, 현금고갈, 상환곤란, 금리 +2%p 스트레스 |
+| 내 예산과 대출로 제일 좋은 집은? | `goal_best_affordable` | 금융 RAG → 매물 교집합 최대 60건 → 매물×상품×대출액 조합 → Pareto → MILP | 내 성향·자산성장·월부담·안전·통근 대표 후보 |
+| 이 동네 집값이 오를까 내릴까? | `qa_market` | 선택 매물 리포트의 국토교통부 실거래 시계열·예측구간·뉴스 판단 재사용 | 상승/하락/보합 방향과 불확실성 |
+| 지금 살까 1~2년 기다릴까? | `qa_buy_or_wait` | 선택 매매가의 1·2년 예측구간 + 대기 중 적정 월세 비용 | 지금 매수/대기 비교와 추가 필요자금 |
+| 여기 말고 예산 맞는 다른 동네는? | `goal_alternative_areas` | 현재 동 제외 → 동별 round-robin 후보 → 동일 금융·상환 제약 Pareto | 현재 데이터 범위 안의 대안 동네 매물 |
+| 이 집 계약해도 안전해? | `qa_contract` | 선택 리포트의 위험도·선순위보증금·집주인 자산비율·보증 검토 | 매물별 수치와 일반 계약 체크리스트 |
+
+특정 매물이 필요한 시장·매수시점·계약안전 질문은 선택 매물이 없을 때 임의의
+서울 예시나 가상 값을 만들지 않는다. 지도에서 매물을 먼저 선택하도록 안내한다.
+전월세 비교는 매물이 없어도 실행하되 `특정 매물이 아닌 적정예산 대표 시나리오`임을
+결과에 명시한다.
 5. `goal_ranker`: 상한 내 보증금이 큰 순으로 정렬하고, 같은 가격이면
    `fraud_score`가 낮은 후보를 우선한다.
 6. `synthesize`: 금융 근거, 계산 결과, 매물 근거를 함께 읽고 실행 방안으로 답한다.

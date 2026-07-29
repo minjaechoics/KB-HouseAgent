@@ -356,8 +356,12 @@ class APILLM(BaseLLM):
             # API 호출 자체는 성공했으므로 이후 Text-to-SQL/합성은 계속 실제 LLM이 맡는다.
             semantic_repairs = []
             rule_plan = self.fallback.plan(text, has_prior_region)
-            if (rule_plan.intent == "goal_financed_jeonse"
-                    and plan.intent != "goal_financed_jeonse"):
+            compound_goals = {
+                "goal_financed_jeonse", "goal_best_affordable",
+                "goal_alternative_areas",
+            }
+            if (rule_plan.intent in compound_goals
+                    and plan.intent != rule_plan.intent):
                 semantic_repairs.append({
                     "from": plan.intent, "to": rule_plan.intent,
                     "reason": "명시적인 금융 활용 전세 최대화 복합 목표 보존",
@@ -380,7 +384,7 @@ class APILLM(BaseLLM):
                 plan.tool_calls = rule_plan.tool_calls
             elif (plan.intent == rule_plan.intent
                   and (plan.intent.startswith("qa_")
-                       or plan.intent == "goal_financed_jeonse")):
+                       or plan.intent in compound_goals)):
                 # 정규식으로 확실히 읽을 수 있는 수치·상품종류 같은 명시 조건은
                 # LLM이 누락/변형하더라도 보존한다. 자유로운 의미 판단은 LLM에
                 # 맡기되 사용자가 직접 말한 WHERE 조건은 조용히 사라지지 않게 한다.
@@ -394,7 +398,7 @@ class APILLM(BaseLLM):
                         "reason": "명시적 자연어 제약을 결정론 파서로 보존",
                     })
                     plan.qa_args.update(repaired_args)
-                if plan.intent == "goal_financed_jeonse":
+                if plan.intent in compound_goals:
                     plan.slots.update(rule_plan.slots)
             # 위험도 요청은 WHERE 상한이 아니라 정렬 의도로만 보존한다.
             if rule_plan.slots.get("sort_by") == "risk_asc":
@@ -740,7 +744,10 @@ def _plan_from_data(data: dict, reason: str) -> Plan:
         calls.append({"tool": "property_search", "args": {}})
     if intent == "qa_finance" and not any(c["tool"] == "finance_search" for c in calls):
         calls.append({"tool": "finance_search", "args": {}})
-    if intent == "goal_financed_jeonse":
+    if intent in {
+        "goal_financed_jeonse", "goal_best_affordable",
+        "goal_alternative_areas",
+    }:
         if not any(c["tool"] == "finance_search" for c in calls):
             calls.append({"tool": "finance_search", "args": {}})
         if not any(c["tool"] == "property_search" for c in calls):

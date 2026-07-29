@@ -57,6 +57,12 @@ class Planner:
         financed_goal = self._detect_financed_jeonse_goal(t)
         if financed_goal:
             return financed_goal
+        alternative_goal = self._detect_alternative_area_goal(t)
+        if alternative_goal:
+            return alternative_goal
+        affordable_goal = self._detect_best_affordable_goal(t)
+        if affordable_goal:
+            return affordable_goal
 
         # ---------- 0-1) Q&A 의도 우선 감지 ----------
         qa = self._detect_qa(t, low)
@@ -224,6 +230,65 @@ class Planner:
             qa_args={"finance_mode": "eligibility"},
         )
 
+    def _goal_region_slots(self, text: str) -> dict:
+        slots: dict = {}
+        for sido in [
+            "서울", "경기", "인천", "부산", "대구", "대전", "광주", "울산", "세종",
+            "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
+        ]:
+            if sido in text:
+                slots["region_sido"] = sido
+                break
+        districts = re.findall(r"([가-힣]{1,8}(?:구|군|시))(?![도])", text)
+        if districts:
+            slots["region_gugun"] = districts
+        return slots
+
+    def _detect_best_affordable_goal(self, text: str) -> Optional[Plan]:
+        """대출을 포함한 감당 가능 매물의 다목적 최적 추천."""
+        has_budget = bool(re.search(
+            r"내\s*예산|가진\s*예산|보유\s*자산|감당\s*가능|살\s*수\s*있는|"
+            r"대출\s*포함|자금\s*조달", text))
+        has_best = bool(re.search(
+            r"제일\s*좋|가장\s*좋|최적|베스트|추천|골라|찾아", text))
+        has_home = bool(re.search(r"집|주택|매물|아파트|오피스텔", text))
+        if not (has_budget and has_best and has_home):
+            return None
+        slots = self._goal_region_slots(text)
+        if re.search(r"매매|매수|구매|내\s*집", text):
+            slots.update(transaction_type="매매", lease_type="매매")
+        return Plan(
+            intent="goal_best_affordable",
+            slots=slots,
+            tool_calls=[
+                {"tool": "finance_search", "args": {}},
+                {"tool": "property_search", "args": {}},
+            ],
+            action="proceed",
+            reason="자기자금·대출·상환제약을 적용한 Pareto 최적 매물 추천 목표",
+            qa_args={"finance_mode": "eligibility"},
+        )
+
+    def _detect_alternative_area_goal(self, text: str) -> Optional[Plan]:
+        """현재 지역/매물 대신 같은 예산에서 가능한 대안 지역 추천."""
+        alternative = bool(re.search(
+            r"여기\s*말고|다른\s*(?:동네|지역)|대안\s*(?:동네|지역)|"
+            r"근처\s*다른|옆\s*동네", text))
+        budget = bool(re.search(r"예산|가격|감당|대출|살\s*수", text))
+        if not (alternative and budget):
+            return None
+        return Plan(
+            intent="goal_alternative_areas",
+            slots=self._goal_region_slots(text),
+            tool_calls=[
+                {"tool": "finance_search", "args": {}},
+                {"tool": "property_search", "args": {}},
+            ],
+            action="proceed",
+            reason="동일 자금·상환 제약을 적용한 대안 지역 Pareto 추천 목표",
+            qa_args={"finance_mode": "eligibility"},
+        )
+
     # ------------------------------------------------------------------
     def _detect_qa(self, t: str, low: str):
         """Q&A 의도 감지 → (intent, args) 또는 None."""
@@ -231,19 +296,29 @@ class Planner:
         is_search = bool(re.search(r"전세|월세|추천|매물|집\s*(?:구|찾|추천)|살\s*곳|이내|이하", t))
 
         if not is_search and re.search(
-                r"치안|안전\s*한\s*동네|우범|범죄|cctv|CCTV|비상벨|파출소|방범", t):
+                r"치안|안전\s*한\s*(?:동네|지역)|밤에\s*안전|우범|범죄|"
+                r"cctv|CCTV|비상벨|파출소|방범", t):
             return ("qa_safety", {})
         if not is_search and re.search(
                 r"편의\s*시설|생활\s*(?:편의|인프라)|주변\s*(?:에\s*)?(?:뭐|시설)|"
                 r"인프라|살기\s*(?:편|좋)", t):
             return ("qa_convenience", {})
-        if re.search(r"특약|계약서|체크리스트|계약\s*할\s*때|확정일자|전입신고", t):
+        if re.search(
+                r"특약|계약서|체크리스트|계약\s*할\s*때|계약해도\s*안전|"
+                r"확정일자|전입신고", t):
             lt = "전세" if "전세" in t else ("월세" if "월세" in t else "전세")
             return ("qa_contract", {"lease_type": lt})
-        if re.search(r"전세.*월세.*(비교|유리|나아|나은)|월세.*전세.*(비교|유리)|"
-                     r"전세랑\s*월세|전세가\s*나아|월세가\s*나아", t):
+        if re.search(r"전세.*월세.*(비교|유리|나아|나은|좋)|월세.*전세.*(비교|유리|좋)|"
+                     r"전세랑\s*월세|전세가\s*(?:나아|좋)|월세가\s*(?:나아|좋)", t):
             return ("qa_lease_compare", {})
-        if re.search(r"실부담|월\s*얼마|한\s*달에\s*얼마|총\s*비용|얼마나\s*드", t):
+        if re.search(
+                r"지금\s*(?:사|매수|구매).*(?:기다|나을)|"
+                r"(?:1|2|1\s*[~～-]\s*2)\s*년\s*(?:뒤|후|기다)|"
+                r"기다리.*(?:사|매수|구매)", t):
+            return ("qa_buy_or_wait", {})
+        if re.search(
+                r"실\s*부담|부담액|월\s*얼마|한\s*달에\s*얼마|"
+                r"총\s*(?:비용|주거비)|얼마나\s*드", t):
             return ("qa_cost", {})
         if re.search(r"지하철|역\s*(?:가까|근처|있)|편의점|병원|마트|카페|헬스장|주변\s*(?:시설|편의)", t):
             cat = ("subway" if "지하철" in t or "역" in t else
@@ -252,7 +327,12 @@ class Planner:
                    "mart" if "마트" in t else
                    "cafe" if "카페" in t else "subway")
             return ("qa_poi", {"category": cat})
-        if re.search(r"시세|적정\s*가|비싼\s*거\s*아|바가지|실거래", t):
+        if re.search(
+                r"시세|적정\s*가|비싼\s*거\s*아|바가지|실거래|"
+                r"가격.*적정|적정.*가격|"
+                r"집값.*(?:오를|내릴|전망|상승|하락)|"
+                r"가격.*(?:오를|내릴|전망|상승|하락)|"
+                r"(?:오를까|내릴까).*(?:집값|가격)", t):
             return ("qa_market", {})
         if re.search(r"등기부|등기\s*확인|근저당\s*확인|신탁등기", t):
             return ("qa_registry", {})

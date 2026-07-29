@@ -63,6 +63,16 @@ def test_gui_exposes_asset_simulation_inputs_and_separate_charts():
         assert token in gui
 
 
+def test_gui_separates_condition_builder_from_decision_advisor():
+    gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
+        encoding="utf-8")
+    for token in (
+        "＋ 조건 추가", "✨ AI 추천·상담", "/api/advisor/chat",
+        "전세가 좋을까 월세가 좋을까?", "advisorResultMarkup",
+    ):
+        assert token in gui
+
+
 def test_children_and_inheritance_are_visible_cashflow_events():
     current_year = __import__("datetime").date.today().year
     result = simulate(
