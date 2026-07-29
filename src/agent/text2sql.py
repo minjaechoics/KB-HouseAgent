@@ -54,6 +54,10 @@ class Text2SQLPipeline:
             safe_slots["order_by"] = "fraud_score ASC"
         elif sort_by == "risk_desc":
             safe_slots["order_by"] = "fraud_score DESC"
+        elif sort_by == "price_asc":
+            safe_slots["order_by"] = "deposit_manwon ASC"
+        elif sort_by == "price_desc":
+            safe_slots["order_by"] = "deposit_manwon DESC"
         safe_slots["limit"] = min(max(int(limit), 1), 500)
         fallback_sql = self.db_tool.build_query(safe_slots)
         trace = SQLTrace(
@@ -372,6 +376,7 @@ def _assert_slot_coverage(sql: str, slots: dict) -> None:
         "max_maintenance_manwon": ("maintenance_fee_manwon",),
         "min_area_m2": ("area_m2", "exclusive_area_m2"),
         "max_building_age": ("building_age_years", "build_year"),
+        "rental_only": ("transaction_type", "lease_type"),
     }
     missing = []
     for slot, alternatives in expected.items():

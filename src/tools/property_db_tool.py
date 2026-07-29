@@ -75,6 +75,8 @@ class PropertyDBTool:
 
         if tt := slots.get("transaction_type"):
             where.append(f"transaction_type = '{_san(tt)}'")
+        if slots.get("rental_only"):
+            where.append("transaction_type IN ('전세', '월세')")
         if pt := slots.get("property_type"):
             safe_pt = _san(pt)
             where.append(

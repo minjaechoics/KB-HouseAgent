@@ -46,7 +46,8 @@ class BaseLLM(ABC):
         self._trace_local.value = value
 
     @abstractmethod
-    def plan(self, text: str, has_prior_region: bool = False) -> Plan: ...
+    def plan(self, text: str, has_prior_region: bool = False,
+             conversation_history: list[dict] | None = None) -> Plan: ...
 
     def plan_condition_dialogue(self, text: str, context: dict) -> dict:
         return _fallback_condition_decision(text, context, self.plan)
@@ -55,7 +56,8 @@ class BaseLLM(ABC):
                      previous_error: str | None = None) -> dict | None:
         return None
 
-    def synthesize(self, user_text: str, result: dict) -> str | None:
+    def synthesize(self, user_text: str, result: dict,
+                   conversation_history: list[dict] | None = None) -> str | None:
         return None
 
     def analyze_json(self, *, operation: str, system: str, user: str,
@@ -79,7 +81,8 @@ class MockLLM(BaseLLM):
         super().__init__()
         self.planner = Planner()
 
-    def plan(self, text: str, has_prior_region: bool = False) -> Plan:
+    def plan(self, text: str, has_prior_region: bool = False,
+             conversation_history: list[dict] | None = None) -> Plan:
         plan = self.planner.plan(text, has_prior_region)
         plan.reason = plan.reason or "rule"
         plan.metadata = {"strategy": "rule", "fallback": False, "attempts": []}
@@ -105,10 +108,18 @@ class QwenLLM(BaseLLM):
         self.model_name = model_name
         self.fallback = Planner()
 
-    def plan(self, text: str, has_prior_region: bool = False) -> Plan:
+    def plan(self, text: str, has_prior_region: bool = False,
+             conversation_history: list[dict] | None = None) -> Plan:
         try:
+            history = json.dumps(
+                conversation_history or [], ensure_ascii=False, default=str)
+            user = (
+                f"<conversation_history>{history}</conversation_history>\n"
+                f"<latest_user_message>{text}</latest_user_message>"
+                if conversation_history else text
+            )
             messages = [{"role": "system", "content": self.SYSTEM},
-                        {"role": "user", "content": text}]
+                        {"role": "user", "content": user}]
             prompt = self.tok.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True)
             inputs = self.tok([prompt], return_tensors="pt").to(self.model.device)
@@ -344,11 +355,20 @@ class APILLM(BaseLLM):
         return {"answer": answer, "map_query": map_query,
                 "sources": sources[:10], "trace": list(self.last_trace)}
 
-    def plan(self, text: str, has_prior_region: bool = False) -> Plan:
+    def plan(self, text: str, has_prior_region: bool = False,
+             conversation_history: list[dict] | None = None) -> Plan:
         try:
+            history_payload = json.dumps(
+                conversation_history or [], ensure_ascii=False, default=str)
+            planner_user = (
+                f"<conversation_history>{history_payload}</conversation_history>\n"
+                f"<latest_user_message>{text}</latest_user_message>"
+                if conversation_history else text
+            )
             data = self._request_json(
                 operation="llm.plan", system=AGENT_SYSTEM_PROMPT,
-                user=(text + ("\n이전 지역 조건이 존재한다." if has_prior_region else "")),
+                user=(planner_user + (
+                    "\n이전 지역 조건이 존재한다." if has_prior_region else "")),
                 schema=PLAN_JSON_SCHEMA, schema_name="housing_agent_plan", max_tokens=900,
             )
             plan = _plan_from_data(data, "api")
@@ -411,6 +431,15 @@ class APILLM(BaseLLM):
                 plan.slots.pop("max_fraud_score", None)
                 plan.slots.pop("safety_is_hard", None)
                 plan.slots["sort_by"] = "risk_asc"
+            if rule_plan.slots.get("sort_by") in {"price_asc", "price_desc"}:
+                requested_sort = rule_plan.slots["sort_by"]
+                if plan.slots.get("sort_by") != requested_sort:
+                    semantic_repairs.append({
+                        "field": "sort_by",
+                        "to": requested_sort,
+                        "reason": "명시적인 최저·최고 가격 정렬 요청 보존",
+                    })
+                plan.slots["sort_by"] = requested_sort
             plan.metadata = {"strategy": "api", "provider": self.provider,
                               "model": self.model, "fallback": False,
                               "attempts": list(self.last_trace),
@@ -479,17 +508,27 @@ class APILLM(BaseLLM):
             schema=SQL_JSON_SCHEMA, schema_name="housing_text_to_sql", max_tokens=1000,
         )
 
-    def synthesize(self, user_text: str, result: dict) -> str | None:
+    def synthesize(self, user_text: str, result: dict,
+                   conversation_history: list[dict] | None = None) -> str | None:
         # 추적 전체나 대량 원시 행은 토큰/민감정보를 줄이기 위해 제외한다.
         grounded = {k: v for k, v in result.items()
                     if k not in {"agent_trace", "answer"}}
         payload = json.dumps(grounded, ensure_ascii=False, default=str)
         if len(payload) > 14000:
             payload = payload[:14000] + "...(일부 생략)"
+        history_payload = json.dumps(
+            conversation_history or [], ensure_ascii=False, default=str)
+        history_block = (
+            f"이전 AI 추천·상담 대화 전체(JSON):\n{history_payload}\n\n"
+            if conversation_history else ""
+        )
         try:
             return self._request_text(
                 operation="llm.synthesize", system=SYNTHESIS_SYSTEM_PROMPT,
-                user=f"사용자 질문: {user_text}\n\n도구 실행 결과 JSON:\n{payload}",
+                user=(
+                    f"{history_block}현재 사용자 질문: {user_text}\n\n"
+                    f"도구 실행 결과 JSON:\n{payload}"
+                ),
                 max_tokens=700,
             )
         except Exception:

@@ -45,6 +45,7 @@ from src.server.property_search import (
     make_initial_scope_atom, merge_atoms,
 )
 from src.report import PropertyReportService
+from src.report.service import json_safe
 from src.optimization import optimize_housing_choices
 from src.preferences import normalize_preferences
 from src.real_estate_feeds.storage import ensure_feed_schema, feed_status
@@ -1357,10 +1358,37 @@ def advisor_chat(body: ChatIn):
     if session is None:
         raise HTTPException(404, "session not found. POST /session first.")
     try:
+        history = session.setdefault("advisor_chat", [])
         result = _agent.handle(
-            session, body.text, direct_recommend=True)
+            session, body.text, direct_recommend=True,
+            conversation_history=copy.deepcopy(history))
         result = _enrich_advisor_recommendations(session, result)
         result["advisor_channel"] = True
+        result = json_safe(result)
+        planner = (result.get("agent_trace") or {}).get("planner") or {}
+        history.extend([
+            {"role": "user", "text": body.text},
+            {
+                "role": "assistant",
+                "text": (
+                    result.get("answer") or result.get("message")
+                    or "추천 결과를 지도에 표시했습니다."
+                ),
+                "status": result.get("status"),
+                "intent": planner.get("intent"),
+                "slots": planner.get("slots") or {},
+                "qa_args": planner.get("qa_args") or {},
+                "recommended_property_ids": [
+                    row.get("property_id")
+                    for row in result.get("recommended_properties") or []
+                    if row.get("property_id")
+                ],
+            },
+        ])
+        result["conversation_memory"] = {
+            "stored_entries": len(history),
+            "prior_entries_used": max(0, len(history) - 2),
+        }
         session["last_advisor_result"] = copy.deepcopy(result)
         return result
     except Exception:

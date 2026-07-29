@@ -16,6 +16,7 @@
 from __future__ import annotations
 import copy
 import json
+import math
 import re
 import joblib
 import pandas as pd
@@ -189,7 +190,8 @@ class JeonseAgent:
     # 진입점: 한 턴 처리
     # ------------------------------------------------------------------
     def handle(self, session: dict, text: str,
-               *, direct_recommend: bool = False) -> dict:
+               *, direct_recommend: bool = False,
+               conversation_history: list[dict] | None = None) -> dict:
         """
         사용자 발화 한 턴 처리 → 응답 dict.
         응답 status: clarify | confirm | recommendation | qa | cancelled | error
@@ -228,8 +230,9 @@ class JeonseAgent:
 
         # 신규 발화
         planning_text = text
+        advisor_history = copy.deepcopy(conversation_history or [])
         context_used = None
-        if session.get("last_intent") and re.search(
+        if not advisor_history and session.get("last_intent") and re.search(
                 r"그중|그럼|그러면|그거|거기서|이중|그 상품|낮은|높은|더|만\s*(?:보여|찾)|"
                 r"나는|내가|제\s*경우|받을\s*수", text):
             context_used = {
@@ -241,7 +244,44 @@ class JeonseAgent:
                 + json.dumps(context_used, ensure_ascii=False)
                 + f"\n현재 사용자의 후속 요청: {text}"
             )
-        plan = self.llm.plan(planning_text)
+        plan = self.llm.plan(
+            planning_text, conversation_history=advisor_history or None)
+        # 이 표현은 적정예산을 무시하라는 명시적 요청이다. 플래너 스키마 밖의
+        # 실행 제어 플래그로 보존해 ATOM 단계의 자동 예산 주입을 막는다.
+        if direct_recommend and re.search(
+                r"예산\s*(?:은\s*)?(?:상관\s*없|무관)|"
+                r"예산\s*제한\s*없|가격\s*(?:은\s*)?상관\s*없", text):
+            plan.slots["_ignore_budget"] = True
+        if direct_recommend and re.search(
+                r"(?:보증금|전세금).*(?:가장|제일|최저).*(?:낮|싸)|"
+                r"(?:가장|제일|최저).*(?:낮|싼).*(?:보증금|전세금)|"
+                r"보증금\s*(?:낮은|싼)\s*순", text):
+            plan.intent = "recommend"
+            plan.action = "proceed"
+            plan.clarify_message = None
+            plan.slots["sort_by"] = "price_asc"
+            plan.slots["_deposit_sort"] = True
+            if not any(
+                    call.get("tool") == "property_search"
+                    for call in plan.tool_calls):
+                plan.tool_calls.append({"tool": "property_search", "args": {}})
+        if advisor_history and plan.intent == "recommend":
+            previous_slots = next((
+                entry.get("slots") or {}
+                for entry in reversed(advisor_history)
+                if entry.get("role") == "assistant" and entry.get("slots")
+            ), {})
+            inherited = []
+            for key in (
+                "transaction_type", "lease_type", "property_type",
+                "region_sido", "region_gugun",
+            ):
+                if plan.slots.get(key) is None and previous_slots.get(key) is not None:
+                    plan.slots[key] = copy.deepcopy(previous_slots[key])
+                    inherited.append(key)
+            if inherited:
+                plan.metadata = dict(plan.metadata or {})
+                plan.metadata["inherited_context_slots"] = inherited
         if direct_recommend and plan.intent == "recommend" and plan.action == "confirm":
             plan.action = "proceed"
             plan.metadata = dict(plan.metadata or {})
@@ -249,10 +289,15 @@ class JeonseAgent:
         if context_used:
             plan.metadata = dict(plan.metadata or {})
             plan.metadata["conversation_context_used"] = context_used
-        return self._route(session, plan, text)
+        if advisor_history:
+            plan.metadata = dict(plan.metadata or {})
+            plan.metadata["advisor_history_turns_used"] = len(advisor_history)
+        return self._route(
+            session, plan, text, conversation_history=advisor_history)
 
     # ------------------------------------------------------------------
-    def _route(self, session, plan: Plan, text: str) -> dict:
+    def _route(self, session, plan: Plan, text: str,
+               conversation_history: list[dict] | None = None) -> dict:
         trace = {"input": text, "planner": {
                     "intent": plan.intent,
                     "action": plan.action,
@@ -263,6 +308,9 @@ class JeonseAgent:
                     "llm": plan.metadata or {"strategy": plan.reason},
                  },
                  "tools": [], "fallbacks": []}
+        if conversation_history:
+            # 최종 합성 단계까지만 전달하고 API trace에는 원문 대화를 노출하지 않는다.
+            trace["_advisor_conversation_history"] = conversation_history
         # 금융→예산→매물의 다단계 목표 처리
         if plan.intent == "goal_financed_jeonse":
             session["last_intent"] = plan.intent
@@ -372,7 +420,7 @@ class JeonseAgent:
         s = dict(slots)
         # 예산 상한 자동(사용자가 명시 안 했으면 적정예산으로)
         lease = s.get("lease_type")
-        if "max_deposit_manwon" not in s:
+        if "max_deposit_manwon" not in s and not s.get("_ignore_budget"):
             if lease == "전세":
                 s["max_deposit_manwon"] = round(aff.recommended_jeonse_deposit_manwon * 1.3, 0)
             elif lease == "월세":
@@ -381,7 +429,8 @@ class JeonseAgent:
                 s["max_deposit_manwon"] = round(max(
                     aff.recommended_jeonse_deposit_manwon,
                     aff.recommended_monthly_deposit_manwon) * 1.3, 0)
-        if lease == "월세" and "max_monthly_rent_manwon" not in s:
+        if (lease == "월세" and "max_monthly_rent_manwon" not in s
+                and not s.get("_ignore_budget")):
             s["max_monthly_rent_manwon"] = round(aff.max_monthly_housing_manwon * 1.2, 0)
         if commute_map:
             s["_commute_minutes_by_id"] = commute_map
@@ -417,6 +466,9 @@ class JeonseAgent:
         for source, target in slot_to_db.items():
             if slots.get(source) is not None:
                 db_slots[target] = slots[source]
+        if slots.get("_deposit_sort") and not (
+                slots.get("transaction_type") or slots.get("lease_type")):
+            db_slots["rental_only"] = True
         rows, sql_trace = self.text2sql.search_properties(user_text, db_slots, limit=500)
         trace["tools"].append({"tool": "property_text2sql", **sql_trace})
         if sql_trace.get("fallback"):
@@ -443,6 +495,8 @@ class JeonseAgent:
             if relaxed_filter:
                 candidates = pd.DataFrame(self.db_tool.query(db_slots))
                 trace["fallbacks"].append("후보 확보를 위해 수치 필터를 SQL에서 완화하고 ATOM에서 재검증")
+        if slots.get("_deposit_sort") and "transaction_type" in candidates:
+            candidates = candidates[candidates["transaction_type"] != "매매"].copy()
         if candidates.empty:
             return self._finalize(user_text, {"status": "no_result",
                     "message": "조건에 맞는 매물을 찾지 못했어요. 예산이나 지역을 넓혀보세요.",
@@ -505,7 +559,30 @@ class JeonseAgent:
         grouped_out = {}
         for k in sorted(groups):
             g = groups[k]
-            ranked = self._reco.recommend(g, context, top_k=5)
+            ranked = self._reco.recommend(
+                g, context, top_k=max(5, min(len(g), 500)))
+            if slots.get("sort_by") == "price_asc":
+                if slots.get("_deposit_sort"):
+                    ranked = ranked.sort_values(
+                        ["deposit_manwon", "monthly_rent_manwon", "score"],
+                        ascending=[True, True, False], na_position="last",
+                    )
+                else:
+                    ranked = ranked.assign(
+                        _sort_price=ranked.apply(
+                            lambda row: (
+                                float(row.get("sale_price_manwon") or
+                                      row.get("asking_price_manwon") or 0)
+                                if row.get("transaction_type") == "매매"
+                                else float(row.get("deposit_manwon") or 0)
+                            ),
+                            axis=1,
+                        )
+                    ).sort_values(
+                        ["_sort_price", "score"],
+                        ascending=[True, False], na_position="last",
+                    )
+                ranked = ranked.head(5)
             recs = []
             for _, r in ranked.iterrows():
                 recs.append(self._format_rec(r))
@@ -521,6 +598,14 @@ class JeonseAgent:
 
     def _format_rec(self, r) -> dict:
         fs = r.get("fraud_score")
+        score = r.get("score", 0)
+        score = 0.0 if pd.isna(score) else float(score)
+        def finite(value, default=0.0):
+            try:
+                number = float(value)
+                return number if math.isfinite(number) else float(default)
+            except (TypeError, ValueError):
+                return float(default)
         return {
             "property_id": r["property_id"], "sido": r["sido"], "gugun": r["gugun"],
             "is_synthetic": bool(r.get("is_synthetic", True)),
@@ -528,15 +613,15 @@ class JeonseAgent:
             "lease_type": r["lease_type"],
             "transaction_type": r.get("transaction_type"),
             "property_type": r.get("property_type") or r.get("house_type"),
-            "deposit_manwon": float(r.get("deposit_manwon") or 0),
-            "sale_price_manwon": float(r.get("sale_price_manwon", 0) or
-                                        r.get("asking_price_manwon", 0) or 0),
-            "monthly_rent_manwon": float(r.get("monthly_rent_manwon") or 0),
-            "maintenance_fee_manwon": float(r.get("maintenance_fee_manwon") or 0),
-            "fraud_score": (None if fs is None or (isinstance(fs, float) and fs != fs)
+            "deposit_manwon": finite(r.get("deposit_manwon")),
+            "sale_price_manwon": finite(
+                r.get("sale_price_manwon") or r.get("asking_price_manwon")),
+            "monthly_rent_manwon": finite(r.get("monthly_rent_manwon")),
+            "maintenance_fee_manwon": finite(r.get("maintenance_fee_manwon")),
+            "fraud_score": (None if fs is None or pd.isna(fs)
                             else round(float(fs), 3)),
             "missing_conditions": r.get("missing_desc", []),
-            "score": round(float(r.get("score", 0)), 3),
+            "score": round(score, 3),
         }
 
     # ------------------------------------------------------------------
@@ -1194,9 +1279,13 @@ class JeonseAgent:
     def _finalize(self, user_text: str, result: dict, trace: dict,
                   synthesize: bool = True) -> dict:
         """최종 응답 합성. LLM 실패 시 기존 구조화 응답이 그대로 폴백이다."""
+        conversation_history = trace.pop(
+            "_advisor_conversation_history", [])
         result["agent_trace"] = trace
         if synthesize and self.llm.supports_agentic_calls:
-            answer = self.llm.synthesize(user_text, result)
+            answer = self.llm.synthesize(
+                user_text, result,
+                conversation_history=conversation_history or None)
             if answer:
                 result["answer"] = answer
                 trace["synthesis"] = {"strategy": "llm_grounded", "ok": True,
@@ -1204,6 +1293,11 @@ class JeonseAgent:
             else:
                 trace["synthesis"] = {"strategy": "template", "ok": False}
                 trace["fallbacks"].append("최종 문장 합성 실패: 구조화 응답 사용")
+        if conversation_history:
+            trace["conversation_memory"] = {
+                "history_entries_used": len(conversation_history),
+                "history_exposed_in_trace": False,
+            }
         return result
 
     @staticmethod

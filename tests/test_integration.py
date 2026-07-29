@@ -204,6 +204,48 @@ def test_advisor_endpoint_returns_map_ready_recommendations():
     assert first["lat"] is not None and first["lng"] is not None
 
 
+def test_advisor_remembers_history_and_returns_lowest_deposit_without_budget_cap():
+    from fastapi.testclient import TestClient
+    from src.server.app import app
+
+    with TestClient(app) as client:
+        session = client.post("/session", json={
+            "age": 29, "monthly_income_manwon": 400,
+            "total_asset_manwon": 10000,
+            "monthly_living_cost_manwon": 120,
+            "preferred_sido": "경기",
+            "preferred_gugun": "수원시 팔달구",
+        }).json()
+        first = client.post("/api/advisor/chat", json={
+            "session_id": session["session_id"],
+            "text": "월세 매물을 먼저 추천해줘",
+        })
+        second = client.post("/api/advisor/chat", json={
+            "session_id": session["session_id"],
+            "text": "예산 상관없이 보증금 가장 낮은걸로 알려줘",
+        })
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    result = second.json()
+    assert result["status"] == "recommendation"
+    assert result["recommended_properties"]
+    assert all(
+        row["transaction_type"] != "매매"
+        for row in result["recommended_properties"])
+    deposits = [
+        float(row["deposit_manwon"])
+        for row in result["recommended_properties"]]
+    assert deposits == sorted(deposits)
+    assert not any(
+        "보증금 ≤" in atom for atom in result.get("atoms") or [])
+    assert result["conversation_memory"]["prior_entries_used"] == 2
+    assert (
+        result["agent_trace"]["planner"]["llm"]["advisor_history_turns_used"]
+        == 2
+    )
+
+
 def test_market_wait_and_contract_questions_reuse_selected_report():
     agent = JeonseAgent("rule")
     session = agent.new_session({

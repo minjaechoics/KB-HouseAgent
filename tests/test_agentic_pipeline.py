@@ -243,6 +243,47 @@ def test_api_plan_repairs_best_affordable_goal_misclassification():
     ]
 
 
+def test_api_planner_and_synthesis_receive_full_advisor_history():
+    llm = object.__new__(APILLM)
+    llm.provider = "test"
+    llm.model = "test-model"
+    llm.fallback = Planner()
+    llm.last_trace = []
+    captured = {}
+
+    def fake_plan_request(**kwargs):
+        captured["plan_user"] = kwargs["user"]
+        return {
+            "intent": "recommend", "action": "confirm",
+            "clarify_message": None,
+            "slots": {"lease_type": "월세", "transaction_type": "월세",
+                      "sort_by": "price_asc"},
+            "tool_calls": [{"tool": "property_search"}],
+            "qa_args": {},
+        }
+
+    llm._request_json = fake_plan_request
+    llm._request_text = lambda **kwargs: (
+        captured.update(synthesis_user=kwargs["user"]) or "후속 답변"
+    )
+    history = [
+        {"role": "user", "text": "월세만 찾아줘"},
+        {"role": "assistant", "text": "월세 후보를 찾았어요."},
+    ]
+    plan = llm.plan(
+        "그중 보증금이 가장 낮은 곳", conversation_history=history)
+    answer = llm.synthesize(
+        "그중 보증금이 가장 낮은 곳",
+        {"status": "recommendation"}, conversation_history=history)
+
+    assert plan.slots["sort_by"] == "price_asc"
+    assert "<conversation_history>" in captured["plan_user"]
+    assert "월세만 찾아줘" in captured["plan_user"]
+    assert "<latest_user_message>그중 보증금이 가장 낮은 곳" in captured["plan_user"]
+    assert "월세 후보를 찾았어요." in captured["synthesis_user"]
+    assert answer == "후속 답변"
+
+
 def test_finance_catalog_does_not_apply_personal_income_filter():
     from src.agent.llm import MockLLM
     pipeline = Text2SQLPipeline(MockLLM(), PropertyDBTool(), FinanceTool())
