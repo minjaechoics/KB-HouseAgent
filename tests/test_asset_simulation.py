@@ -228,3 +228,11 @@ def test_cash_purchase_does_not_auto_apply_unused_finance_product():
     assert result["funding"]["verdict_code"] == "cash_possible"
     assert result["funding"]["chosen_program_id"] is None
     assert result["funding"]["known_product_loan_manwon"] == 0
+
+
+def test_facility_counts_show_the_backend_radius_in_every_tile():
+    gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
+        encoding="utf-8")
+    assert "data?.radius_m" in gui
+    assert 'class="radius-badge"' in gui
+    assert 'class="facility-radius">${radiusText}' in gui
