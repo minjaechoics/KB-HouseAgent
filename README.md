@@ -633,6 +633,10 @@ KB-HouseAgent/
 
 ## 관련 문서
 
+- [Atom 기반 에이전트 Task DAG 스케줄러](docs/AGENT_TASK_SCHEDULER.md):
+  FIFO·HEFT·Branch-and-Bound·CP-SAT·Treewidth DP 포트폴리오, 조건 검색
+  통합, rolling-horizon 재계획, 오프라인 벤치마크
+
 - `AGENTIC_SYSTEM_ARCHITECTURE.md`: Planner, Text-to-SQL, 도구와 폴백
 - `DATABASE_QUERY_CONDITION_GUIDE.md`: DB별 WHERE 조건과 스키마
 - `DATA_GENERATION_ALGORITHM.md`: 부동산 생성 알고리즘

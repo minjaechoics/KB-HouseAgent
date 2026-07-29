@@ -261,12 +261,12 @@ def test_async_news_assessment_enables_llm_after_fast_report():
     assert result["news"]["ai_judgement_completed"] is True
 
 
-def test_gui_runs_news_llm_before_metric_explanation():
+def test_gui_runs_independent_news_and_metric_llms_in_parallel():
     gui = (Path(__file__).parents[1] / "src/server/gui.html").read_text(
         encoding="utf-8")
     for token in (
         "/api/properties/report/news-assessment",
-        "loadNewsAssessment().finally(()=>loadMetricExplanations())",
+        "Promise.allSettled([loadNewsAssessment(),loadMetricExplanations()])",
         "지역 뉴스를 정밀 분석하고 있어요",
         "ai_judgement_completed",
     ):

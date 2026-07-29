@@ -41,6 +41,7 @@ pydantic>=2.5          # typed schemas for property / user records
 tqdm>=4.66
 tabulate>=0.9
 PyYAML>=6.0            # source/schema mappings for owner-asset-ratio pipeline
+ortools>=9.10,<10.0    # CP-SAT task-DAG scheduling portfolio
 
 # --- web service ---
 fastapi>=0.115,<1.0

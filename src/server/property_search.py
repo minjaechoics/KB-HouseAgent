@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from src import config
+from src.scheduling import (
+    PortfolioScheduler, compile_condition_graph, condition_resource_limits,
+)
 from src.tools.map_tool import MapTool
 
 
@@ -401,6 +404,11 @@ class AtomicPropertySearch:
     def __init__(self, db_path: Path = config.DB_PATH, map_tool: MapTool | None = None):
         self.db_path = db_path
         self.map_tool = map_tool or MapTool()
+        self.scheduler = PortfolioScheduler(
+            deadline_ms=max(
+                10, int(getattr(config, "AGENT_SCHEDULER_DEADLINE_MS", 60))
+            )
+        )
 
     def _conn(self):
         uri = self.db_path.resolve().as_uri() + "?mode=ro"
@@ -455,6 +463,25 @@ class AtomicPropertySearch:
                                 if atom.get("field") != "commute_minutes"]
         route_api_budget = config.ROUTE_API_EXACT_CANDIDATE_LIMIT
         route_api_calls_used = 0
+        schedule_graph = compile_condition_graph(
+            enabled, route_candidate_limit=route_api_budget
+        )
+        schedule_limits = condition_resource_limits(
+            sqlite_capacity=getattr(config, "CONDITION_SQL_MAX_WORKERS", 2),
+            route_capacity=config.ROUTE_API_MAX_WORKERS,
+        )
+        execution_schedule = self.scheduler.schedule(
+            schedule_graph, schedule_limits
+        )
+        scheduled_by_id = execution_schedule.task_map()
+
+        def scheduled_start(atom):
+            scheduled = scheduled_by_id.get(f"sql:{atom['id']}")
+            return scheduled.start_ms if scheduled is not None else 10**12
+
+        additional_sql_atoms.sort(
+            key=lambda atom: (scheduled_start(atom), atom["id"])
+        )
 
         with self._conn() as connection:
             base_components = list((initial_atom or {}).get("conditions") or [])
@@ -505,14 +532,42 @@ class AtomicPropertySearch:
                 ).fetchone()[0])
 
             # Every AI SQL predicate is evaluated with the initial WHERE clause
-            # physically present in the query.  It can therefore only narrow
-            # the setup intersection and can never introduce an out-of-scope ID.
-            for atom in additional_sql_atoms:
+            # physically present in the query. Independent atoms are dispatched
+            # according to the portfolio schedule and intersected only after all
+            # read-only queries finish.
+            def execute_sql_atom(atom):
                 clause, atom_params = self._clause(atom)
                 scoped_where = f"({base_where}) AND ({clause})"
                 scoped_params = [*base_params, *atom_params]
                 sql = f"SELECT property_id FROM properties WHERE {scoped_where}"
-                ids = {row[0] for row in connection.execute(sql, scoped_params)}
+                with self._conn() as atom_connection:
+                    ids = {
+                        row[0] for row in atom_connection.execute(
+                            sql, scoped_params
+                        )
+                    }
+                return atom, clause, atom_params, scoped_params, sql, ids
+
+            sql_workers = min(
+                schedule_limits.get("sqlite").capacity,
+                len(additional_sql_atoms),
+            )
+            if sql_workers > 1:
+                with ThreadPoolExecutor(
+                    max_workers=sql_workers,
+                    thread_name_prefix="condition-sql",
+                ) as executor:
+                    sql_results = list(
+                        executor.map(execute_sql_atom, additional_sql_atoms)
+                    )
+            else:
+                sql_results = [
+                    execute_sql_atom(atom) for atom in additional_sql_atoms
+                ]
+
+            for (
+                atom, clause, atom_params, scoped_params, sql, ids
+            ) in sql_results:
                 intersection = ids if intersection is None else intersection & ids
                 sql_atoms.append((atom, clause, atom_params))
                 traces.append({
@@ -708,6 +763,7 @@ class AtomicPropertySearch:
                     "Directions 5 and transit by TMAP when configured; provider errors "
                     "fall back to labelled haversine estimates"
                 ),
+                "condition_scheduler": execution_schedule.to_dict(),
             },
         }
 

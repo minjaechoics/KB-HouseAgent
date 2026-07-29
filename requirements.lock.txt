@@ -20,6 +20,7 @@ joblib==1.5.3
 pydantic==2.13.4
 tqdm==4.68.4
 tabulate==0.10.0
+ortools==9.14.6206
 
 # --- LLM API (서비스용, 선택) ---
 anthropic==0.40.0        # 또는 openai; 실제 사용 시 최신으로 올려도 무방

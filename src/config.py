@@ -35,6 +35,15 @@ OPENAI_MODEL = os.environ.get("LLM_MODEL", "gpt-4.1-mini").strip()
 OPENAI_FALLBACK_MODEL = os.environ.get(
     "LLM_FALLBACK_MODEL", "gpt-4o-mini"
 ).strip()
+LLM_MAX_CONCURRENCY = max(
+    1, int(os.environ.get("LLM_MAX_CONCURRENCY", "6"))
+)
+AGENT_SCHEDULER_DEADLINE_MS = max(
+    10, int(os.environ.get("AGENT_SCHEDULER_DEADLINE_MS", "60"))
+)
+CONDITION_SQL_MAX_WORKERS = max(
+    1, int(os.environ.get("CONDITION_SQL_MAX_WORKERS", "2"))
+)
 
 # 생활안전지도 편의점 REST API. 서비스 키는 별도 발급값이 제공되지 않아 빈 값으로
 # 둔다. 발급 후 이 상수만 채우면 전국 데이터를 로컬 캐시에 내려받아 사용한다.

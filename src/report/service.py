@@ -19,6 +19,10 @@ from src import config
 from src.audit import DecisionAuditStore
 from src.market_forecast import HousePriceForecaster
 from src.simulation import simulate_probabilistic
+from src.scheduling import (
+    PortfolioScheduler, compile_report_enrichment_graph,
+    report_resource_limits,
+)
 from src.report.budget import simulate
 from src.report.lifestyle import estimate_monthly_lifestyle
 from src.tools.convenience_tool import ConvenienceTool
@@ -110,6 +114,11 @@ class PropertyReportService:
         )
         self._risk_explanation_cache: dict[str, tuple[float, dict]] = {}
         self._metric_explanation_cache: dict[str, tuple[float, dict]] = {}
+        self.task_scheduler = PortfolioScheduler(
+            deadline_ms=max(
+                10, int(getattr(config, "AGENT_SCHEDULER_DEADLINE_MS", 60))
+            )
+        )
 
     def _base_analysis(self, prop: dict) -> tuple[dict, bool]:
         """Slow property-only lookups run concurrently and are cached."""
@@ -1665,7 +1674,29 @@ class PropertyReportService:
                 "contract_risk_llm": risk_explanation_elapsed_ms,
             },
         }
+        enrichment_schedule = self.task_scheduler.schedule(
+            compile_report_enrichment_graph(),
+            report_resource_limits(
+                getattr(config, "LLM_MAX_CONCURRENCY", 6)
+            ),
+        )
+        result["agent_execution_schedule"] = enrichment_schedule.to_dict()
         safe_result = json_safe(result)
+        self.audit.record_step(
+            decision_run_id,
+            stage="agent_task_scheduling",
+            tool=enrichment_schedule.algorithm,
+            input_data={
+                "task_ids": sorted(
+                    compile_report_enrichment_graph().tasks
+                ),
+                "openai_capacity": getattr(
+                    config, "LLM_MAX_CONCURRENCY", 6
+                ),
+            },
+            output_data=enrichment_schedule.to_dict(),
+            source_refs=["condition_task_dag", "scheduler_portfolio"],
+        )
         self.audit.record_step(
             decision_run_id, stage="llm_explanation", tool=type(self.llm).__name__,
             output_data={

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -28,7 +29,21 @@ class BaseLLM(ABC):
     supports_agentic_calls = False
 
     def __init__(self):
-        self.last_trace: list[dict] = []
+        # A single APILLM instance is shared by FastAPI requests.  Thread-local
+        # traces prevent concurrent prompts from overwriting each other's audit.
+        self._trace_local = threading.local()
+        self.last_trace = []
+
+    @property
+    def last_trace(self) -> list[dict]:
+        trace_local = getattr(self, "_trace_local", None)
+        return getattr(trace_local, "value", [])
+
+    @last_trace.setter
+    def last_trace(self, value: list[dict]) -> None:
+        if not hasattr(self, "_trace_local"):
+            self._trace_local = threading.local()
+        self._trace_local.value = value
 
     @abstractmethod
     def plan(self, text: str, has_prior_region: bool = False) -> Plan: ...
@@ -136,6 +151,9 @@ class APILLM(BaseLLM):
             base_delay_seconds=max(0.0, float(os.environ.get("LLM_RETRY_BASE_SECONDS", "0.35"))),
             max_delay_seconds=max(0.0, float(os.environ.get("LLM_RETRY_MAX_SECONDS", "2.0"))),
         )
+        self._concurrency = threading.BoundedSemaphore(
+            max(1, int(getattr(config, "LLM_MAX_CONCURRENCY", 6)))
+        )
         if not self.api_key:
             raise RuntimeError("API 키가 없습니다. config.py 또는 provider 환경설정을 확인하세요.")
 
@@ -150,28 +168,36 @@ class APILLM(BaseLLM):
                 timeout=float(os.environ.get("LLM_TIMEOUT_SECONDS", "30")), max_retries=0,
             )
 
+    def _call_in_slot(self, function):
+        with self._concurrency:
+            return function()
+
     def _request_json(self, *, operation: str, system: str, user: str,
                       schema: dict, schema_name: str, max_tokens: int = 800) -> dict:
         model_used = self.model
 
         def invoke() -> dict:
-            if self.provider == "anthropic":
-                schema_text = json.dumps(schema, ensure_ascii=False)
-                msg = self._client.messages.create(
-                    model=model_used, max_tokens=max_tokens,
-                    system=system + "\nJSON Schema:\n" + schema_text,
-                    messages=[{"role": "user", "content": user}],
-                )
-                raw = "".join(b.text for b in msg.content
-                              if getattr(b, "type", "") == "text")
-            else:
+            def request():
+                if self.provider == "anthropic":
+                    schema_text = json.dumps(schema, ensure_ascii=False)
+                    msg = self._client.messages.create(
+                        model=model_used, max_tokens=max_tokens,
+                        system=system + "\nJSON Schema:\n" + schema_text,
+                        messages=[{"role": "user", "content": user}],
+                    )
+                    return "".join(
+                        b.text for b in msg.content
+                        if getattr(b, "type", "") == "text"
+                    )
                 response = self._client.responses.create(
                     model=model_used, instructions=system, input=user,
                     max_output_tokens=max_tokens,
                     text={"format": {"type": "json_schema", "name": schema_name,
                                      "strict": True, "schema": schema}},
                 )
-                raw = response.output_text
+                return response.output_text
+
+            raw = self._call_in_slot(request)
             return _extract_json(raw)
 
         retry_if = lambda exc: is_transient_error(exc) or isinstance(
@@ -210,20 +236,25 @@ class APILLM(BaseLLM):
     def _request_text(self, *, operation: str, system: str, user: str,
                       max_tokens: int = 700) -> str:
         def invoke() -> str:
-            if self.provider == "anthropic":
-                msg = self._client.messages.create(
-                    model=self.model, max_tokens=max_tokens, system=system,
-                    messages=[{"role": "user", "content": user}],
+            def request():
+                if self.provider == "anthropic":
+                    msg = self._client.messages.create(
+                        model=self.model, max_tokens=max_tokens, system=system,
+                        messages=[{"role": "user", "content": user}],
+                    )
+                    return "".join(
+                        b.text for b in msg.content
+                        if getattr(b, "type", "") == "text"
+                    ).strip()
+                response = self._client.responses.create(
+                    model=self.model, instructions=system, input=user,
+                    max_output_tokens=max_tokens,
                 )
-                return "".join(b.text for b in msg.content
-                               if getattr(b, "type", "") == "text").strip()
-            response = self._client.responses.create(
-                model=self.model, instructions=system, input=user,
-                max_output_tokens=max_tokens,
-            )
-            if not response.output_text.strip():
-                raise ValueError("LLM이 빈 응답을 반환했습니다")
-            return response.output_text.strip()
+                if not response.output_text.strip():
+                    raise ValueError("LLM이 빈 응답을 반환했습니다")
+                return response.output_text.strip()
+
+            return self._call_in_slot(request)
 
         value, events = call_with_retry(
             operation, invoke, policy=self.retry_policy,
@@ -246,19 +277,21 @@ class APILLM(BaseLLM):
             return None
 
         def invoke():
-            return self._client.responses.create(
-                model=self.model,
-                instructions=(
-                    "당신은 주택 검색 에이전트의 웹 검색 도구다. 공식 기관·공식 사이트를 "
-                    "우선하고, 확인되지 않은 좌표나 주소를 만들지 마라. 장소 확인 요청이면 "
-                    "마지막 줄을 반드시 'MAP_QUERY: 도로명주소 또는 정식 장소명' 형식으로 써라. "
-                    "찾지 못하면 'MAP_QUERY: NOT_FOUND'라고 써라."
-                ),
-                input=f"목적: {purpose or '외부 사실 확인'}\n검색 요청: {query}",
-                max_output_tokens=700,
-                tools=[{"type": "web_search", "search_context_size": "low"}],
-                tool_choice="required",
-                include=["web_search_call.action.sources"],
+            return self._call_in_slot(
+                lambda: self._client.responses.create(
+                    model=self.model,
+                    instructions=(
+                        "당신은 주택 검색 에이전트의 웹 검색 도구다. 공식 기관·공식 사이트를 "
+                        "우선하고, 확인되지 않은 좌표나 주소를 만들지 마라. 장소 확인 요청이면 "
+                        "마지막 줄을 반드시 'MAP_QUERY: 도로명주소 또는 정식 장소명' 형식으로 써라. "
+                        "찾지 못하면 'MAP_QUERY: NOT_FOUND'라고 써라."
+                    ),
+                    input=f"목적: {purpose or '외부 사실 확인'}\n검색 요청: {query}",
+                    max_output_tokens=700,
+                    tools=[{"type": "web_search", "search_context_size": "low"}],
+                    tool_choice="required",
+                    include=["web_search_call.action.sources"],
+                )
             )
 
         try:
