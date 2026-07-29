@@ -849,9 +849,19 @@ class JeonseAgent:
             else ([gugun] if gugun else [])
         )
         preferred_gugun = str(user.get("preferred_gugun") or "").strip()
+        def district_terms(value) -> set[str]:
+            terms = set()
+            for token in str(value or "").split():
+                terms.add(token)
+                if token.endswith(("시", "군", "구")) and len(token) > 1:
+                    terms.add(token[:-1])
+            return terms
+
+        preferred_terms = district_terms(preferred_gugun)
         if preferred_gugun and any(
             preferred_gugun == str(value).strip()
             or preferred_gugun.startswith(f"{str(value).strip()} ")
+            or bool(preferred_terms & district_terms(value))
             for value in requested_gugun
         ):
             gugun = [preferred_gugun]

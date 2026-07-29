@@ -242,6 +242,10 @@ class Planner:
         districts = re.findall(r"([가-힣]{1,8}(?:구|군|시))(?![도])", text)
         if districts:
             slots["region_gugun"] = districts
+        elif "수원" in text:
+            # Prototype scope alias; the harness narrows this parent city to
+            # the session's concrete DB district (for example 수원시 팔달구).
+            slots["region_gugun"] = ["수원"]
         return slots
 
     def _detect_best_affordable_goal(self, text: str) -> Optional[Plan]:
