@@ -225,6 +225,23 @@ def test_gui_loads_metric_explanations_after_main_report():
         assert token in gui
 
 
+def test_report_ui_hides_internal_model_names_and_exposes_calculation_details():
+    root = Path(__file__).parents[1]
+    gui = (root / "src/server/gui.html").read_text(encoding="utf-8")
+    service = (root / "src/report/service.py").read_text(encoding="utf-8")
+
+    for token in (
+        "어떻게 구하나요?", "calc-disclosure", "calc-formula",
+        "metric-ai-head", "publicUiText",
+    ):
+        assert token in gui
+    for internal_name in (
+        "hf_actual", "published_logit", "prior_calibration",
+    ):
+        assert internal_name not in gui
+    assert "모델명, 테이블명, 보정기법 이름은 절대 노출하지 않는다" in service
+
+
 def test_senior_deposit_integration_marks_non_registry_input_low_confidence():
     import sqlite3
 
