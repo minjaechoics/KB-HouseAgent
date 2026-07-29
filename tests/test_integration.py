@@ -157,6 +157,27 @@ def test_best_affordable_goal_calls_pareto_engine_directly():
         "property_text2sql", "finance_search", "pareto_milp_optimizer"]
 
 
+def test_best_affordable_normalizes_broad_llm_region_to_session_db_scope():
+    agent = JeonseAgent("rule")
+    session = agent.new_session({
+        "user_id": "BROAD-REGION", "age": 29,
+        "monthly_income_manwon": 600, "total_asset_manwon": 50000,
+        "monthly_living_cost_manwon": 100, "income_decile": 5,
+        "preferred_sido": "경기", "preferred_gugun": "수원시 팔달구",
+        "preferences": {"mode": "balanced", "approved": True},
+    })
+    result = agent.handle(
+        session,
+        "경기도 수원시에서 내 예산과 대출로 제일 좋은 집은?",
+        direct_recommend=True,
+    )
+    assert result["status"] == "recommendation"
+    prop_trace = result["agent_trace"]["tools"][0]
+    assert prop_trace["input_filters"]["sido"] == "경기"
+    assert prop_trace["input_filters"]["gugun"] == ["수원시 팔달구"]
+    assert prop_trace["row_count"] > 0
+
+
 def test_advisor_endpoint_returns_map_ready_recommendations():
     from fastapi.testclient import TestClient
     from src.server.app import app

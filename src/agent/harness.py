@@ -825,6 +825,36 @@ class JeonseAgent:
         user = session["user"]
         region = plan.slots.get("region_sido") or user.get("preferred_sido")
         gugun = plan.slots.get("region_gugun") or user.get("preferred_gugun")
+        # The LLM can return a broad/common administrative name such as
+        # "경기도/수원시", while this prototype DB scope is stored as
+        # "경기/수원시 팔달구". Narrow a containing parent scope to the
+        # session's real DB scope before exact-match Text-to-SQL is executed.
+        sido_aliases = {
+            "서울특별시": "서울", "부산광역시": "부산", "대구광역시": "대구",
+            "인천광역시": "인천", "광주광역시": "광주", "대전광역시": "대전",
+            "울산광역시": "울산", "세종특별자치시": "세종",
+            "경기도": "경기", "강원특별자치도": "강원",
+            "충청북도": "충북", "충청남도": "충남",
+            "전북특별자치도": "전북", "전라남도": "전남",
+            "경상북도": "경북", "경상남도": "경남",
+            "제주특별자치도": "제주",
+        }
+        region = sido_aliases.get(str(region), region)
+        preferred_sido = sido_aliases.get(
+            str(user.get("preferred_sido")), user.get("preferred_sido"))
+        if preferred_sido and region == preferred_sido:
+            region = preferred_sido
+        requested_gugun = (
+            list(gugun) if isinstance(gugun, (list, tuple, set))
+            else ([gugun] if gugun else [])
+        )
+        preferred_gugun = str(user.get("preferred_gugun") or "").strip()
+        if preferred_gugun and any(
+            preferred_gugun == str(value).strip()
+            or preferred_gugun.startswith(f"{str(value).strip()} ")
+            for value in requested_gugun
+        ):
+            gugun = [preferred_gugun]
         db_slots: dict = {"limit": 500}
         transaction = plan.slots.get("transaction_type")
         initial_transactions = [
