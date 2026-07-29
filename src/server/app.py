@@ -976,6 +976,33 @@ def property_report_metric_explanations(body: MetricExplanationIn):
     return _property_report.explain_metrics(report)
 
 
+@app.post("/api/properties/report/news-assessment")
+def property_report_news_assessment(body: MetricExplanationIn):
+    """Upgrade the fast keyword preview with an asynchronous LLM judgement."""
+    session = _SESSIONS.get(body.session_id)
+    if session is None:
+        raise HTTPException(404, "session not found. POST /session first.")
+    report = session.get("last_property_report")
+    if (
+        not isinstance(report, dict)
+        or str(report.get("decision_run_id") or "") != body.decision_run_id
+    ):
+        raise HTTPException(409, "latest property report changed")
+    try:
+        result = _property_report.explain_news(report)
+        forecast = report.setdefault("forecast", {})
+        forecast["news"] = copy.deepcopy(result["news"])
+        forecast["market_assessment"] = copy.deepcopy(
+            result["market_assessment"]
+        )
+        return result
+    except Exception as exc:
+        logger.exception("property report news assessment failed")
+        raise HTTPException(
+            503, "AI 뉴스 분석을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요."
+        ) from exc
+
+
 @app.post("/api/properties/owner-asset-ratio")
 def owner_asset_ratio(body: OwnerAssetRatioIn):
     """Estimate D/A only when a real-data artifact has been approved."""

@@ -252,6 +252,10 @@ class NewsSignalTool:
             if not judgement:
                 judgement = self._fallback_judgement(
                     items, [str(sido), str(gugun)], market_context)
+                if not use_llm:
+                    judgement["overall"]["summary"] = (
+                        "빠른 기사 분류를 먼저 표시하고 AI 정밀 판정을 준비하고 있습니다."
+                    )
 
             decisions = {int(x.get("index")): x for x in judgement.get("articles", [])
                          if isinstance(x, dict) and str(x.get("index", "")).isdigit()}

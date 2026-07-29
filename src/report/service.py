@@ -1171,6 +1171,43 @@ class PropertyReportService:
         except Exception:
             return fallback
 
+    def explain_news(self, report: dict) -> dict:
+        """Run the slower LLM news judgement after the main report is visible."""
+        prop = report.get("property") or {}
+        forecast = report.get("forecast") or {}
+        price_history = forecast.get("price_history") or {}
+        regional = report.get("regional_market") or {}
+        rone_price = regional.get("price_index") or {}
+        rone_supply = regional.get("supply_demand") or {}
+        news = self.forecaster.news_tool.assess(
+            str(prop.get("sido") or ""),
+            str(prop.get("gugun") or ""),
+            str(prop.get("house_type") or "주택"),
+            building_name=str(prop.get("building_name") or ""),
+            use_llm=True,
+            market_context={
+                "time_series_annual_growth_rate": forecast.get(
+                    "time_series_annual_growth_rate"
+                ),
+                "time_series_low": forecast.get("annual_low"),
+                "time_series_high": forecast.get("annual_high"),
+                "rtms_change_1m": price_history.get("change_1m"),
+                "rtms_change_period": price_history.get("change_period"),
+                "price_history_match_type": price_history.get("match_type"),
+                "rone_price_index": rone_price.get("latest_value"),
+                "rone_price_index_change_1m_points": rone_price.get("change_1m"),
+                "rone_supply_demand_index": rone_supply.get("latest_value"),
+            },
+        )
+        news = copy.deepcopy(news)
+        news["ai_judgement_completed"] = True
+        return {
+            "news": news,
+            "market_assessment": copy.deepcopy(
+                news.get("overall_assessment") or {}
+            ),
+        }
+
     def property(self, property_id: str) -> dict | None:
         uri = self.db_path.resolve().as_uri() + "?mode=ro"
         connection = sqlite3.connect(uri, uri=True)

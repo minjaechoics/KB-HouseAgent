@@ -101,3 +101,18 @@ def test_news_llm_only_exposes_price_relevant_articles(monkeypatch):
     assert all("축구" not in row["title"] for row in result["relevant_headlines"])
     assert result["overall_assessment"]["label"] == "positive"
     assert result["annual_adjustment_pct_point"] > 0
+
+
+def test_fast_news_preview_does_not_claim_llm_is_unavailable(monkeypatch):
+    monkeypatch.setenv("NAVER_NEWS_CLIENT_ID", "id")
+    monkeypatch.setenv("NAVER_NEWS_CLIENT_SECRET", "secret")
+    tool = NewsSignalTool(llm=NewsLLM(), session=NewsSession())
+
+    result = tool.assess(
+        "경기도", "수원영통구", "아파트", use_llm=False,
+        market_context={"time_series_annual_growth_rate": 0.02},
+    )
+
+    assert result["judge_strategy"] == "keyword_fallback"
+    assert "AI 정밀 판정을 준비" in result["overall_assessment"]["summary"]
+    assert "LLM을 사용할 수 없어" not in result["overall_assessment"]["summary"]

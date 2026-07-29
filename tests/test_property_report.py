@@ -225,6 +225,54 @@ def test_gui_loads_metric_explanations_after_main_report():
         assert token in gui
 
 
+def test_async_news_assessment_enables_llm_after_fast_report():
+    calls = []
+
+    class NewsTool:
+        def assess(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return {
+                "judge_strategy": "llm_structured",
+                "overall_assessment": {
+                    "label": "neutral",
+                    "summary": "관련 기사와 실거래 추세를 함께 확인했습니다.",
+                },
+            }
+
+    service = PropertyReportService.__new__(PropertyReportService)
+    service.forecaster = type(
+        "Forecaster", (), {"news_tool": NewsTool()}
+    )()
+    result = service.explain_news({
+        "property": {
+            "sido": "경기도", "gugun": "수원시 팔달구",
+            "house_type": "다가구주택", "building_name": "테스트주택",
+        },
+        "forecast": {
+            "time_series_annual_growth_rate": .01,
+            "annual_low": -.02, "annual_high": .04,
+            "price_history": {"change_1m": .01, "change_period": .03},
+        },
+        "regional_market": {},
+    })
+
+    assert calls[0][1]["use_llm"] is True
+    assert result["news"]["judge_strategy"] == "llm_structured"
+    assert result["news"]["ai_judgement_completed"] is True
+
+
+def test_gui_runs_news_llm_before_metric_explanation():
+    gui = (Path(__file__).parents[1] / "src/server/gui.html").read_text(
+        encoding="utf-8")
+    for token in (
+        "/api/properties/report/news-assessment",
+        "loadNewsAssessment().finally(()=>loadMetricExplanations())",
+        "지역 뉴스를 정밀 분석하고 있어요",
+        "ai_judgement_completed",
+    ):
+        assert token in gui
+
+
 def test_report_ui_hides_internal_model_names_and_exposes_calculation_details():
     root = Path(__file__).parents[1]
     gui = (root / "src/server/gui.html").read_text(encoding="utf-8")
