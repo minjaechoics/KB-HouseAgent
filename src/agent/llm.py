@@ -803,7 +803,9 @@ def _plan_from_data(data: dict, reason: str) -> Plan:
 
 def get_llm() -> BaseLLM:
     choice = os.environ.get("JEONSE_LLM", "api").lower()
-    if choice == "api":
+    # "openai" is kept as a user-facing alias because older runbooks used it.
+    # Previously that documented value fell through to MockLLM silently.
+    if choice in {"api", "openai"}:
         try:
             return APILLM()
         except Exception as exc:

@@ -111,6 +111,20 @@ def test_condition_compiler_preserves_expensive_route_precedence():
     assert set(graph.tasks["intersection:commute"].dependencies) == set(routes)
 
 
+def test_condition_compiler_represents_unlimited_tmap_as_dynamic_batch():
+    atoms = [{
+        "id": "commute", "field": "commute_minutes", "mode": "transit",
+    }]
+    graph = compile_condition_graph(
+        atoms, route_candidate_limit=5, unlimited_route_modes={"transit"},
+    )
+    routes = [task for task in graph.tasks if task.startswith("route:commute")]
+    assert len(routes) == 1
+    route = graph.tasks[routes[0]]
+    assert route.metadata["kind"] == "route_candidate_batch"
+    assert route.metadata["unlimited_candidate_batch"] is True
+
+
 def test_rolling_horizon_only_repairs_unfinished_tasks():
     graph = sample_graph()
     limits = sample_limits()

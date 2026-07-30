@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from src.agent.harness import JeonseAgent
 from src.agent.llm import APILLM
 
@@ -26,8 +28,7 @@ def _user(user_id: str, income: float = 320) -> dict:
 
 def test_openai_live_plan():
     if not _enabled():
-        print("SKIP: RUN_LIVE_OPENAI_TEST=1일 때만 실제 OpenAI API를 호출합니다.")
-        return
+        pytest.skip("RUN_LIVE_OPENAI_TEST=1일 때만 실제 OpenAI API를 호출합니다.")
     agent = JeonseAgent("rule")
     assert isinstance(agent.llm, APILLM)
     session = agent.new_session(_user("LIVE-PROPERTY"))
@@ -53,7 +54,7 @@ def test_openai_live_plan():
 
 def test_openai_live_finance_rate_where():
     if not _enabled():
-        return
+        pytest.skip("RUN_LIVE_OPENAI_TEST=1일 때만 실제 OpenAI API를 호출합니다.")
     agent = JeonseAgent("rule")
     assert isinstance(agent.llm, APILLM)
     session = agent.new_session(_user("LIVE-FINANCE", income=300))
@@ -72,7 +73,7 @@ def test_openai_live_finance_rate_where():
 
 def test_openai_live_finance_catalog_semantics():
     if not _enabled():
-        return
+        pytest.skip("RUN_LIVE_OPENAI_TEST=1일 때만 실제 OpenAI API를 호출합니다.")
     agent = JeonseAgent("rule")
     session = agent.new_session(_user("LIVE-FINANCE-CATALOG", income=9999))
     response = agent.handle(session, "금융지원책 뭐가 있지")
@@ -90,7 +91,7 @@ def test_openai_live_finance_catalog_semantics():
 
 def test_openai_live_financed_jeonse_goal():
     if not _enabled():
-        return
+        pytest.skip("RUN_LIVE_OPENAI_TEST=1일 때만 실제 OpenAI API를 호출합니다.")
     agent = JeonseAgent("rule")
     session = agent.new_session(_user("LIVE-FINANCED-GOAL", income=250))
     response = agent.handle(

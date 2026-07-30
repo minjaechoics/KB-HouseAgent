@@ -200,8 +200,7 @@ class SimulationSubscriptionIn(BaseModel):
 class LifestyleSimulationIn(BaseModel):
     use_itemized_budget: bool = False
     transport_mode: str = "transit"
-    destinations: list[SimulationDestinationIn] = Field(
-        default_factory=list, max_length=5)
+    destinations: list[SimulationDestinationIn] = Field(default_factory=list)
     transit_taxi_ratio_pct: float = Field(default=10, ge=0, le=100)
     extra_transport_monthly_krw: float = Field(default=0, ge=0, le=100_000_000)
     car_fuel_price_krw_per_liter: float = Field(default=1700, ge=0, le=100_000)

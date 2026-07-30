@@ -30,6 +30,23 @@ def test_itemized_lifestyle_uses_routes_and_not_legacy_living_cost():
     assert result["effective_monthly_living_cost_krw"] == 414000
 
 
+def test_premium_tmap_lifestyle_keeps_more_than_five_destinations():
+    destinations = [
+        {"query": f"목적지 {index}", "visits_per_month": 1}
+        for index in range(7)
+    ]
+    result = estimate_monthly_lifestyle(
+        {}, {"lat": 37.4, "lng": 127.0},
+        {"use_itemized_budget": True, "transport_mode": "transit",
+         "destinations": destinations},
+        MapFixture(),
+    )
+    assert result["route_api_calls"] == 7
+    assert len(result["destinations"]) == 7
+    assert result["route_api_call_limit"] is None
+    assert result["route_api_call_policy"] == "tmap_transit_unlimited"
+
+
 def test_selected_finance_product_and_age_axis_change_simulation():
     programs = [
         {"program_id": "cheap", "name": "주택 구입 대출", "category": "구입대출",

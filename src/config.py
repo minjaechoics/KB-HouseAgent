@@ -157,9 +157,26 @@ INCOME_DECILE_BOUNDARIES_MAN = [
 # ----------------------------------------------------------------------
 GLOBAL_SEED = int(os.environ.get("JEONSE_SEED", "42"))
 
-# 실제 경로 API는 좌표/SQL로 줄인 후보에만 호출한다. 10만 건 전체에 API를
-# 호출하지 않으며, 한 검색 요청 전체에서 최대 5개 후보만 실경로로 검증한다.
-ROUTE_API_EXACT_CANDIDATE_LIMIT = max(
-    1, int(os.environ.get("ROUTE_API_EXACT_CANDIDATE_LIMIT", "5")))
+# 실제 경로 API는 좌표/SQL로 줄인 후보에만 호출한다. TMAP 대중교통은
+# Premium 종량제 전환 후 기본값 0(무제한)으로 운영한다. NAVER Directions도
+# 기본값 0으로 두어 후보 개수를 인위적으로 자르지 않는다.
+TMAP_TRANSIT_EXACT_CANDIDATE_LIMIT = max(
+    0, int(os.environ.get("TMAP_TRANSIT_EXACT_CANDIDATE_LIMIT", "0")))
+NAVER_DIRECTIONS_EXACT_CANDIDATE_LIMIT = max(
+    0, int(os.environ.get("NAVER_DIRECTIONS_EXACT_CANDIDATE_LIMIT", "0")))
+# Backward-compatible alias. The legacy environment variable is intentionally
+# no longer read so an old value of 5 cannot silently restore the removed cap.
+ROUTE_API_EXACT_CANDIDATE_LIMIT = NAVER_DIRECTIONS_EXACT_CANDIDATE_LIMIT
 ROUTE_API_MAX_WORKERS = max(
     1, min(12, int(os.environ.get("ROUTE_API_MAX_WORKERS", "3"))))
+
+
+def exact_route_candidate_limit(mode: str) -> int | None:
+    """Return the per-search live-route cap; None means no count cap."""
+    if mode == "transit":
+        return (None if TMAP_TRANSIT_EXACT_CANDIDATE_LIMIT == 0
+                else TMAP_TRANSIT_EXACT_CANDIDATE_LIMIT)
+    if mode == "driving":
+        return (None if NAVER_DIRECTIONS_EXACT_CANDIDATE_LIMIT == 0
+                else NAVER_DIRECTIONS_EXACT_CANDIDATE_LIMIT)
+    return None

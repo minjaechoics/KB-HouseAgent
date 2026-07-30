@@ -127,10 +127,10 @@ curl -s http://127.0.0.1:8000/health
 응답 성공 여부는 대중교통 조건 검색 후 RAG DEBUG의 `provider_source_counts`에서
 `tmap_transit` 호출 건수를 확인한다.
 
-무료체험은 대중교통 요약정보 10건/일이므로 서버 `.env.production`에
-`ROUTE_API_EXACT_CANDIDATE_LIMIT=5`를 둔다. 이 값은 한 검색 요청 전체의 실경로
-검증 후보 예산이며, 현재 코드 기본값도 5건이다. 종량제 전환 후 비용을 확인하고
-명시적으로 늘릴 수 있다. 한도 초과(HTTP 429)는 자동 재시도 후
+Premium 종량제에서는 서버 `.env.production`에
+`TMAP_TRANSIT_EXACT_CANDIDATE_LIMIT=0`을 두며, 0은 검색당 후보 수 상한이 없다는
+뜻이다. NAVER 자동차 경로도 `NAVER_DIRECTIONS_EXACT_CANDIDATE_LIMIT=0`으로
+후보 수 상한을 두지 않는다. 공급자 한도 초과(HTTP 429)는 자동 재시도 후
 `estimated_haversine_transit`으로 명시적으로 fallback된다.
 
 ## 비용 중단과 삭제

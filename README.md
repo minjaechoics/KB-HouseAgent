@@ -17,7 +17,7 @@
 
 청년의 주거 선택은 단순한 매물 검색이 아니다. 사용자는 거래유형, 지역, 예산, 통근, 안전, 금융상품 자격, 보증금 미반환 위험, 미래 소득과 생애사건을 동시에 고려해야 한다. 기존 검색 서비스는 보통 조건에 맞는 매물을 나열하고, 금융 서비스는 상품 목록을 별도로 제공하며, 언어모델 기반 상담은 근거가 약하거나 수치 계산을 모델의 자유 생성에 맡기는 문제가 있다. 본 논문은 이 세 영역을 하나의 검증 가능한 의사결정 파이프라인으로 결합한 **KB HouseAgent**를 기술한다.
 
-시스템의 핵심 원칙은 “언어모델이 해석하고, 결정적 코드가 검증·계산하며, 모든 판단을 추적한다”이다. 자연어는 원자적 조건으로 분해되고, 관계형 데이터베이스 질의로 변환되며, 생성된 SQL은 허용 테이블·열·함수, 읽기 전용 연결, 행 수 제한, 실행시간 제한으로 방어된다. 매물·금융상품 후보는 사용자 초기조건의 교집합에서만 확장된다. 경로 API는 SQL 및 공간 사전필터 이후 최대 5개 후보에만 적용한다. 상세 판단에서는 보증사고 로짓모형, 집주인 총자산 대비 보증금 비율 추정, 다가구 선순위보증금 시나리오, 전세가율 확률분포를 서로 합산하지 않고 독립적으로 제시한다.
+시스템의 핵심 원칙은 “언어모델이 해석하고, 결정적 코드가 검증·계산하며, 모든 판단을 추적한다”이다. 자연어는 원자적 조건으로 분해되고, 관계형 데이터베이스 질의로 변환되며, 생성된 SQL은 허용 테이블·열·함수, 읽기 전용 연결, 행 수 제한, 실행시간 제한으로 방어된다. 매물·금융상품 후보는 사용자 초기조건의 교집합에서만 확장된다. 경로 API는 SQL 및 공간 사전필터 이후 적용하며, TMAP Premium 대중교통과 NAVER Directions 5 자동차 경로 모두 후보 수 상한 없이 검증한다. 상세 판단에서는 보증사고 로짓모형, 집주인 총자산 대비 보증금 비율 추정, 다가구 선순위보증금 시나리오, 전세가율 확률분포를 서로 합산하지 않고 독립적으로 제시한다.
 
 장기 결과는 고정 상승률 한 줄이 아니라 월 단위 10,000개 몬테카를로 경로로 계산한다. 소득·물가·금융자산수익률·주택가격 충격의 상관을 반영하고, 실직·출산·상속·금리 2%p 상승을 시나리오화한다. 후보 선택은 자산 성장, 월 부담, 안전, 통근, 유동성, 부채를 동시에 다루는 파레토 분석과 혼합정수계획 형태로 기술된다. 집값 전망은 국토교통부 실거래가 월별 패널에서 계절 기준선, Ridge, 히스토그램 기반 그래디언트 부스팅, LightGBM을 walk-forward 방식으로 비교하고, conformal 보정으로 80%·95% 예측구간을 만든다.
 
@@ -698,12 +698,12 @@ zone이 확인되지 않았고, 무허가 직접 스크래핑은 구현하지 �
  → 가격·유형·지역 SQL
  → 목적지 좌표를 중심으로 bounding box/Haversine 사전필터
  → 저비용 근사 통근순위
- → 최대 5개 후보만 실제 경로 API
+ → TMAP 대중교통·NAVER 자동차 후보 전체 실경로 검증
  → 정확 경로시간 조건
  → 최종 후보
 ```
 
-`ROUTE_API_EXACT_CANDIDATE_LIMIT` 기본값은 5, 경로 동시 작업자는 3이다.
+`TMAP_TRANSIT_EXACT_CANDIDATE_LIMIT`와 `NAVER_DIRECTIONS_EXACT_CANDIDATE_LIMIT`의 기본값 0은 애플리케이션 수준의 후보 수 상한이 없음을 뜻한다. 경로 동시 작업자는 3이다.
 
 ## 7.2 좌표 거리
 
@@ -1898,12 +1898,14 @@ SAFEMAP_SERVICE_KEY=
 RONE_API_KEY=
 EV_CHARGER_SERVICE_KEY=
 
-ROUTE_API_EXACT_CANDIDATE_LIMIT=5
+TMAP_TRANSIT_EXACT_CANDIDATE_LIMIT=0
+NAVER_DIRECTIONS_EXACT_CANDIDATE_LIMIT=0
 ROUTE_API_MAX_WORKERS=3
 JEONSE_SHOW_RAG_TRACE=1
 ```
 
-실제 LLM을 사용하려면 `JEONSE_LLM=openai`와 `OPENAI_API_KEY`를 설정한다. 비용 없이 구조만 시험하려면 `JEONSE_LLM=mock`을 사용한다.
+실제 LLM을 사용하려면 `JEONSE_LLM=api`(호환 별칭 `openai`)와
+`OPENAI_API_KEY`를 설정한다. 비용 없이 구조만 시험하려면 `JEONSE_LLM=mock`을 사용한다.
 
 ## 21.4 원천 파일 배치
 
@@ -2133,7 +2135,7 @@ DB가 큰 경우 원천파일 체크섬, 변환 스크립트 버전, 행 수, �
 - DB 인덱스와 필요한 열만 SELECT.
 - 공공시설을 메모리/공간 인덱스로 캐시.
 - 목적지 지오코딩 캐시.
-- 초기 SQL 교집합 뒤 경로 API 최대 5건.
+- 초기 SQL·공간 교집합 뒤 TMAP 대중교통과 NAVER 자동차 후보 전체를 검증한다.
 - 독립 리포트 섹션 병렬 실행.
 - LLM semaphore 기본 6.
 - 조건 SQL worker 기본 2.
@@ -2295,7 +2297,7 @@ KB HouseAgent의 핵심은 화려한 한 문장의 추천이 아니다. 자연�
 
 - JSON 구조의 Planner와 안전한 Text-to-SQL
 - 팔달구 매물·금융상품 RDB 검색
-- Naver/TMAP 경로 도구와 호출 상한
+- Naver/TMAP 경로 도구와 공급자별 호출 정책
 - 전세보증 사고 이전모형
 - 임대인 자산·선순위보증금·전세가율 확률모형
 - walk-forward·conformal 집값 전망
@@ -2550,7 +2552,7 @@ con.close()
 | C1 | 자연어를 구조화 계획으로 변환 | `src/agent/prompts.py`, `planner.py` | agent/evaluation tests | 운영 |
 | C2 | 생성 SQL을 다층 검증 | `src/agent/text2sql.py` | agentic pipeline tests | 운영 |
 | C3 | 추가조건은 초기 교집합 안에서만 적용 | `atoms.py`, `property_search.py` | condition workflow tests | 운영 |
-| C4 | 경로 API는 최대 5개 후보 | `src/config.py`, `map_tool.py` | route limit tests | 운영 |
+| C4 | TMAP 대중교통·NAVER 자동차 모두 후보 상한 없음 | `src/config.py`, `map_tool.py` | provider-specific route policy tests | 운영 |
 | C5 | 금융상품 3값 자격판정 | `finance_tool.py`, report finance | finance consistency tests | 운영 |
 | C6 | 보증사고는 공개계수 이전 로짓 | `src/fraud_risk/` | `fraud_risk_model.json` | 운영·이전 |
 | C7 | 특정 집주인 자산은 모집단 추정 | `src/owner_asset_ratio/` | actual evaluation JSON | 실험 |

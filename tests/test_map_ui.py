@@ -220,23 +220,53 @@ class CountingLiveMap(OfflineMap):
                 "estimated": False, "route_found": True}
 
 
-def test_live_route_api_budget_is_five_candidates_per_search():
+def test_premium_tmap_transit_has_no_candidate_count_cap():
     tool = CountingLiveMap()
-    initial = make_initial_scope_atom(atoms_from_profile({
-        "preferred_sido": "대전", "transaction_types": ["전세", "월세"],
-    }))
     commute = make_atom(
         field="commute_minutes", operator="lte", value=60,
-        label="대전역 대중교통 60분 이내", source="AI 대화",
-        extra={"destination_lat": 36.332, "destination_lng": 127.434,
-               "mode": "transit", "landmark": "대전역"},
+        label="수원역 대중교통 60분 이내", source="AI 대화",
+        extra={"destination_lat": 37.266, "destination_lng": 127.000,
+               "mode": "transit", "landmark": "수원역"},
     )
     result = AtomicPropertySearch(map_tool=tool).search(
-        [initial, commute], {initial["id"], commute["id"]}, limit=10,
+        [commute], {commute["id"]}, limit=10,
     )
-    assert tool.calls <= 5
-    assert result["trace"]["route_api_call_budget"]["max_per_search"] == 5
+    route_trace = next(item for item in result["trace"]["per_condition"]
+                       if item["atom_id"] == commute["id"])
+    assert tool.calls > 5
+    assert tool.calls == route_trace["route_evaluated_candidate_count"]
+    assert result["trace"]["route_api_call_budget"]["max_per_search"] is None
+    assert result["trace"]["route_api_call_budget"]["policy"] == "live_routes_unlimited"
     assert result["trace"]["route_api_call_budget"]["used"] == tool.calls
+
+
+class CountingDrivingMap(CountingLiveMap):
+    def has_live_route(self, mode: str) -> bool:
+        return mode == "driving"
+
+    def route_provider(self, mode: str) -> str:
+        return "counting_naver" if mode == "driving" else "estimate"
+
+
+def test_naver_driving_has_no_candidate_count_cap():
+    tool = CountingDrivingMap()
+    commute = make_atom(
+        field="commute_minutes", operator="lte", value=60,
+        label="수원역 자동차 60분 이내", source="AI 대화",
+        extra={"destination_lat": 37.266, "destination_lng": 127.000,
+               "mode": "driving", "landmark": "수원역"},
+    )
+    result = AtomicPropertySearch(map_tool=tool).search(
+        [commute], {commute["id"]}, limit=10,
+    )
+    budget = result["trace"]["route_api_call_budget"]
+    route_trace = next(item for item in result["trace"]["per_condition"]
+                       if item["atom_id"] == commute["id"])
+    assert tool.calls > 5
+    assert tool.calls == route_trace["route_evaluated_candidate_count"]
+    assert budget["max_per_search"] is None
+    assert budget["limits_by_mode"]["driving"] is None
+    assert budget["policy"] == "live_routes_unlimited"
 
 
 def test_blank_profile_does_not_create_any_filters():

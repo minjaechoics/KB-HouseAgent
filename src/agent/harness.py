@@ -30,6 +30,7 @@ from src.preference.affordability import compute_affordability
 from src.tools.map_tool import MapTool
 from src.tools.finance_tool import FinanceTool
 from src.tools.property_db_tool import PropertyDBTool
+from src.server.property_search import AtomicPropertySearch, atoms_from_slots, make_atom
 from src.tools.advisory_tools import contract_checklist, cost_breakdown
 from src.tools.external_tools import POISearchTool
 from src.tools.safety_tool import SafetyTool
@@ -158,6 +159,7 @@ class JeonseAgent:
         self.map_tool = MapTool()
         self.finance_tool = FinanceTool()
         self.db_tool = PropertyDBTool()
+        self.property_search = AtomicPropertySearch(map_tool=self.map_tool)
         self.poi_tool = POISearchTool()
         self.safety_tool = SafetyTool()
         self.convenience_tool = ConvenienceTool()
@@ -441,6 +443,86 @@ class JeonseAgent:
         return s
 
     # ------------------------------------------------------------------
+    _COMMUTE_SLOT_KEYS = (
+        "max_commute_min", "workplace_landmark", "_workplace_landmark", "commute_mode")
+    _NUMERIC_ATOM_FIELDS = {
+        "deposit_manwon", "sale_price_manwon", "monthly_rent_manwon",
+        "maintenance_fee_manwon", "area_m2", "building_age_years"}
+
+    def _atomic_property_search(self, slots: dict, *, limit: int = 500,
+                                rental_only: bool = False, relax_on_empty: bool = False,
+                                sort_by: str = "recommended") -> tuple[list[dict], dict]:
+        """Atomic·병렬·스케줄 기반 매물 조회(AtomicPropertySearch 재사용).
+
+        통근시간은 여기서 hard 필터로 만들지 않는다 — ATOM 소프트 스코어링에서
+        계속 처리하므로(_do_recommend의 commute_map), 그 결과를 바꾸지 않기 위해
+        관련 슬롯을 조건 변환 전에 제거한다. source_text도 빈 문자열로 고정해
+        atoms_from_slots의 정규식 기반 조건(반려동물·주차 등)이 새로 생기지 않게 한다.
+        """
+        clean_slots = {k: v for k, v in slots.items() if k not in self._COMMUTE_SLOT_KEYS}
+        gugun = clean_slots.get("region_gugun")
+        if gugun is not None and not isinstance(gugun, (list, tuple)):
+            clean_slots["region_gugun"] = [gugun]
+
+        atoms, _notes = atoms_from_slots(clean_slots, "", self.map_tool)
+        if rental_only and not any(a["field"] == "transaction_type" for a in atoms):
+            atoms.append(make_atom(
+                field="transaction_type", operator="in", value=["전세", "월세"],
+                label="전세/월세 매물만(매매 제외)", source="AI 대화"))
+
+        active_atoms = list(atoms)
+        result = self.property_search.search(active_atoms, limit=limit, sort_by=sort_by)
+        relax_notes: list[str] = []
+        if relax_on_empty and not result["properties"]:
+            if any(a["field"] == "gugun" for a in active_atoms):
+                active_atoms = [a for a in active_atoms if a["field"] != "gugun"]
+                result = self.property_search.search(
+                    active_atoms, limit=limit, sort_by=sort_by)
+                relax_notes.append("시군구 조건 완화 후 재조회")
+            # 거래유형(전세/월세/매매)이 명시된 경우에만 시/도까지 완화한다.
+            # 거래유형이 없는 완전히 막연한 요청에서 시/도까지 지우면 서로 다른
+            # 거래유형이 뒤섞여 비교 불가능한 후보가 섞이므로 완화하지 않는다.
+            if (not result["properties"]
+                    and any(a["field"] == "sido" for a in active_atoms)
+                    and any(a["field"] == "transaction_type" for a in active_atoms)):
+                active_atoms = [a for a in active_atoms if a["field"] != "sido"]
+                result = self.property_search.search(
+                    active_atoms, limit=limit, sort_by=sort_by)
+                relax_notes.append("시도 조건 완화 후 재조회")
+            if (not result["properties"]
+                    and any(a["field"] in self._NUMERIC_ATOM_FIELDS for a in active_atoms)):
+                active_atoms = [a for a in active_atoms
+                               if a["field"] not in self._NUMERIC_ATOM_FIELDS]
+                result = self.property_search.search(active_atoms, limit=limit, sort_by=sort_by)
+                relax_notes.append("후보 확보를 위해 수치 필터를 완화하고 ATOM에서 재검증")
+
+        rows = result["properties"]
+        input_filters = {k: v for k, v in clean_slots.items() if not str(k).startswith("_")}
+        if "region_sido" in input_filters:
+            input_filters["sido"] = input_filters.pop("region_sido")
+        if "region_gugun" in input_filters:
+            input_filters["gugun"] = input_filters.pop("region_gugun")
+        input_filters["limit"] = limit
+
+        trace_dict = {
+            "target": "properties",
+            "strategy": "atomic_scheduled_search",
+            "request_summary": "ATOM 분해 + PortfolioScheduler 병렬 조회로 매물 후보 검증",
+            "input_filters": input_filters,
+            "atoms": [{"field": a["field"], "operator": a["operator"],
+                      "value": a["value"], "label": a["label"]} for a in active_atoms],
+            "validation": "passed_atomic_scheduled_search",
+            "row_count": len(rows),
+            "final_sql": result["trace"].get("final_sql"),
+            "parameters": result["trace"].get("final_parameters"),
+            "fallback": False,
+            "fallback_reason": None,
+            "relaxation_notes": relax_notes,
+            "atomic_search_trace": result["trace"],
+        }
+        return rows, trace_dict
+
+    # ------------------------------------------------------------------
     def _do_recommend(self, session, user_text: str, trace: dict) -> dict:
         user = session["user"]
         slots = session.get("pending_slots") or {}
@@ -448,53 +530,19 @@ class JeonseAgent:
         aff = compute_affordability(user)
         session["stage"] = "idle"
 
-        # 1) DB 조회용 슬롯(hard 필터는 넉넉히, ATOM에서 세밀 분류)
-        db_slots = {"limit": 500}
-        # 안전 선호는 후보를 제거하지 않고 위험도 낮은 순으로 정렬한다.
-        if slots.get("sort_by") == "risk_asc":
-            db_slots["order_by"] = "fraud_score ASC"
-        slot_to_db = {
-            "lease_type": "lease_type", "transaction_type": "transaction_type",
-            "property_type": "property_type", "region_sido": "sido",
-            "region_gugun": "gugun", "max_deposit_manwon": "max_deposit_manwon",
-            "max_sale_price_manwon": "max_sale_price_manwon",
-            "max_monthly_rent_manwon": "max_monthly_rent_manwon",
-            "max_maintenance_manwon": "max_maintenance_manwon",
-            "min_area_m2": "min_area_m2",
-            "max_building_age": "max_building_age",
-        }
-        for source, target in slot_to_db.items():
-            if slots.get(source) is not None:
-                db_slots[target] = slots[source]
-        if slots.get("_deposit_sort") and not (
-                slots.get("transaction_type") or slots.get("lease_type")):
-            db_slots["rental_only"] = True
-        rows, sql_trace = self.text2sql.search_properties(user_text, db_slots, limit=500)
-        trace["tools"].append({"tool": "property_text2sql", **sql_trace})
-        if sql_trace.get("fallback"):
-            trace["fallbacks"].append("LLM SQL 대신 검증된 슬롯 SQL 사용")
+        # 1) ATOM 분해 + 병렬·스케줄 기반 매물 조회(AtomicPropertySearch 재사용)
+        rental_only = bool(slots.get("_deposit_sort") and not (
+            slots.get("transaction_type") or slots.get("lease_type")))
+        # PropertyDBTool.build_query의 옛 기본 정렬(deposit_manwon ASC)과
+        # 동일하게, risk_asc 요청이 없으면 저가순으로 후보를 가져온다.
+        sort_by = "risk_asc" if slots.get("sort_by") == "risk_asc" else "price_asc"
+        rows, prop_trace = self._atomic_property_search(
+            slots, limit=500, rental_only=rental_only,
+            relax_on_empty=True, sort_by=sort_by)
+        trace["tools"].append({"tool": "property_text2sql", **prop_trace})
+        trace["fallbacks"].extend(prop_trace.get("relaxation_notes", []))
         candidates = pd.DataFrame(rows)
 
-        # 조회 실패 시 지역 완화 재시도(폴백)
-        if candidates.empty and "gugun" in db_slots:
-            db_slots.pop("gugun")
-            candidates = pd.DataFrame(self.db_tool.query(db_slots))
-            trace["fallbacks"].append("시군구 조건 완화 후 재조회")
-        if candidates.empty and "sido" in db_slots:
-            db_slots.pop("sido")
-            candidates = pd.DataFrame(self.db_tool.query(db_slots))
-            trace["fallbacks"].append("시도 조건 완화 후 재조회")
-        if candidates.empty:
-            # 검색 단계에서는 후보를 넓게 확보하고 예산은 아래 ATOM에서
-            # hard 조건 및 단계적 임계 완화로 다시 검증한다.
-            relaxed_filter = False
-            for key in ("max_deposit_manwon", "max_sale_price_manwon",
-                        "max_monthly_rent_manwon", "max_maintenance_manwon",
-                        "min_area_m2", "max_building_age"):
-                relaxed_filter = db_slots.pop(key, None) is not None or relaxed_filter
-            if relaxed_filter:
-                candidates = pd.DataFrame(self.db_tool.query(db_slots))
-                trace["fallbacks"].append("후보 확보를 위해 수치 필터를 SQL에서 완화하고 ATOM에서 재검증")
         if slots.get("_deposit_sort") and "transaction_type" in candidates:
             candidates = candidates[candidates["transaction_type"] != "매매"].copy()
         if candidates.empty:
@@ -672,22 +720,18 @@ class JeonseAgent:
         })
 
         # 3) 계산된 예산을 WHERE 상한으로 넣고 전세 매물을 조회한다.
-        db_slots = {
-            "lease_type": "전세", "transaction_type": "전세",
+        atoms_slots = {
+            "transaction_type": "전세", "lease_type": "전세",
             "max_deposit_manwon": budget,
-            "order_by": "deposit_manwon DESC", "limit": 500,
         }
         if region:
-            db_slots["sido"] = region
+            atoms_slots["region_sido"] = region
         if gugun:
-            db_slots["gugun"] = gugun
-        rows, property_trace = self.text2sql.search_properties(
-            text + f"\n계산된 전세보증금 상한: {budget}만원, 상한 내 최고가 우선",
-            db_slots, limit=500,
-        )
+            atoms_slots["region_gugun"] = gugun
+        rows, property_trace = self._atomic_property_search(
+            atoms_slots, limit=500, relax_on_empty=False, sort_by="recommended")
         trace["tools"].append({"tool": "property_text2sql", **property_trace})
-        if property_trace.get("fallback"):
-            trace["fallbacks"].append("LLM 매물 SQL 대신 검증된 슬롯 SQL 사용")
+        trace["fallbacks"].extend(property_trace.get("relaxation_notes", []))
 
         # SQL 표현과 무관하게 목표 함수(상한 내 보증금 최대)를 마지막에 재검증한다.
         candidates = [row for row in rows
@@ -950,7 +994,7 @@ class JeonseAgent:
             for value in requested_gugun
         ):
             gugun = [preferred_gugun]
-        db_slots: dict = {"limit": 500}
+        atoms_slots: dict = {}
         transaction = plan.slots.get("transaction_type")
         initial_transactions = [
             value for value in (user.get("transaction_types") or [])
@@ -959,12 +1003,12 @@ class JeonseAgent:
         if not transaction and len(initial_transactions) == 1:
             transaction = initial_transactions[0]
         if transaction:
-            db_slots.update(
+            atoms_slots.update(
                 transaction_type=transaction, lease_type=transaction)
         if region:
-            db_slots["sido"] = region
+            atoms_slots["region_sido"] = region
         if gugun:
-            db_slots["gugun"] = gugun
+            atoms_slots["region_gugun"] = gugun
         current_intersection = list(
             (session.get("map_ui") or {}).get("last_search_properties") or [])
         if current_intersection:
@@ -976,8 +1020,8 @@ class JeonseAgent:
                 "fallback": False,
             }
         else:
-            rows, property_trace = self.text2sql.search_properties(
-                text, db_slots, limit=500)
+            rows, property_trace = self._atomic_property_search(
+                atoms_slots, limit=500, relax_on_empty=False, sort_by="recommended")
         if initial_transactions and not plan.slots.get("transaction_type"):
             rows = [
                 row for row in rows

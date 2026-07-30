@@ -45,7 +45,7 @@ def _estimated_taxi_fare(distance_km: float) -> float:
 def estimate_monthly_lifestyle(user: dict, prop: dict, inputs: dict | None,
                                map_tool) -> dict:
     raw = dict(inputs or {})
-    destinations = list(raw.get("destinations") or [])[:5]
+    destinations = list(raw.get("destinations") or [])
     mode = str(raw.get("transport_mode") or "transit")
     if mode not in {"transit", "driving"}:
         mode = "transit"
@@ -141,7 +141,11 @@ def estimate_monthly_lifestyle(user: dict, prop: dict, inputs: dict | None,
         "transport_mode": mode,
         "vehicle_powertrain": str(raw.get("vehicle_powertrain") or "gasoline"),
         "destinations": route_rows,
-        "route_api_call_limit": 5,
+        "route_api_call_limit": None,
+        "route_api_call_policy": (
+            "tmap_transit_unlimited" if mode == "transit"
+            else "naver_driving_unlimited"
+        ),
         "route_api_calls": len([row for row in route_rows if row.get("resolved")]),
         "monthly_roundtrip_distance_km": round(total_roundtrip_km, 1),
         "subscriptions": subscriptions,

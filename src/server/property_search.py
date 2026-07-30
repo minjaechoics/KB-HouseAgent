@@ -461,10 +461,17 @@ class AtomicPropertySearch:
                          if atom.get("field") == "commute_minutes"]
         additional_sql_atoms = [atom for atom in additional_atoms
                                 if atom.get("field") != "commute_minutes"]
-        route_api_budget = config.ROUTE_API_EXACT_CANDIDATE_LIMIT
-        route_api_calls_used = 0
+        route_api_calls_used: dict[str, int] = {"transit": 0, "driving": 0}
+        schedule_candidate_limit = max(
+            1, config.NAVER_DIRECTIONS_EXACT_CANDIDATE_LIMIT)
+        unlimited_route_modes = {
+            mode for mode in ("transit", "driving")
+            if config.exact_route_candidate_limit(mode) is None
+        }
         schedule_graph = compile_condition_graph(
-            enabled, route_candidate_limit=route_api_budget
+            enabled,
+            route_candidate_limit=schedule_candidate_limit,
+            unlimited_route_modes=unlimited_route_modes,
         )
         schedule_limits = condition_resource_limits(
             sqlite_capacity=getattr(config, "CONDITION_SQL_MAX_WORKERS", 2),
@@ -585,6 +592,7 @@ class AtomicPropertySearch:
                 destination = (float(atom["destination_lat"]),
                                float(atom["destination_lng"]))
                 mode = atom.get("mode", "transit")
+                route_api_limit = config.exact_route_candidate_limit(mode)
                 max_minutes = float(atom["value"])
                 live_route = self.map_tool.has_live_route(mode)
                 if live_route:
@@ -620,11 +628,14 @@ class AtomicPropertySearch:
                     (float(row["lng"]) - destination[1])
                     * math.cos(math.radians(destination[0]))))
                 candidate_limit_reached = False
-                budget_before = max(0, route_api_budget - route_api_calls_used)
+                calls_used = route_api_calls_used.get(mode, 0)
+                budget_before = (None if route_api_limit is None else
+                                 max(0, route_api_limit - calls_used))
                 if live_route:
-                    candidate_limit_reached = len(evaluation_rows) > budget_before
-                    evaluation_rows = evaluation_rows[:budget_before]
-                    route_api_calls_used += len(evaluation_rows)
+                    if budget_before is not None:
+                        candidate_limit_reached = len(evaluation_rows) > budget_before
+                        evaluation_rows = evaluation_rows[:budget_before]
+                    route_api_calls_used[mode] = calls_used + len(evaluation_rows)
 
                 def evaluate_route(row):
                     travel = (self.map_tool.travel_time if live_route else
@@ -670,7 +681,12 @@ class AtomicPropertySearch:
                                     "landmark": atom.get("landmark")},
                     "bounding_box_candidate_count": len(rows),
                     "route_evaluated_candidate_count": len(evaluation_rows),
-                    "candidate_limit": (budget_before if live_route else None),
+                    "candidate_limit": (route_api_limit if live_route else None),
+                    "candidate_limit_policy": (
+                        "unlimited_premium_tmap"
+                        if live_route and route_api_limit is None
+                        else "configured_cap" if live_route else "not_applicable"
+                    ),
                     "candidate_limit_reached": candidate_limit_reached,
                     "provider_source_counts": source_counts,
                     "provider_fallback_count": fallback_count,
@@ -754,9 +770,30 @@ class AtomicPropertySearch:
                 ),
                 "display_candidate_pool": len(candidates),
                 "route_api_call_budget": {
-                    "max_per_search": route_api_budget,
-                    "used": route_api_calls_used,
-                    "remaining": max(0, route_api_budget - route_api_calls_used),
+                    "max_per_search": (
+                        None if any(
+                            config.exact_route_candidate_limit(
+                                atom.get("mode", "transit")) is None
+                            for atom in commute_atoms)
+                        else min(
+                            config.exact_route_candidate_limit(
+                                atom.get("mode", "transit"))
+                            for atom in commute_atoms)
+                        if commute_atoms else None
+                    ),
+                    "policy": (
+                        "live_routes_unlimited" if any(
+                            config.exact_route_candidate_limit(
+                                atom.get("mode", "transit")) is None
+                            for atom in commute_atoms)
+                        else "provider_specific_cap"
+                    ),
+                    "used": sum(route_api_calls_used.values()),
+                    "used_by_mode": route_api_calls_used,
+                    "limits_by_mode": {
+                        "transit": config.exact_route_candidate_limit("transit"),
+                        "driving": config.exact_route_candidate_limit("driving"),
+                    },
                 },
                 "map_time_policy": (
                     "indexed bounding-box prefilter; driving is validated by NAVER "

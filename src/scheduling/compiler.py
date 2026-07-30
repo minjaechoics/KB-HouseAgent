@@ -36,6 +36,7 @@ def compile_condition_graph(
     atoms: list[dict],
     *,
     route_candidate_limit: int = 5,
+    unlimited_route_modes: set[str] | None = None,
 ) -> TaskGraph:
     tasks: list[TaskNode] = []
     initial = next(
@@ -88,8 +89,10 @@ def compile_condition_graph(
             else "naver_directions" if mode == "driving"
             else "map_estimate"
         )
+        unlimited = mode in (unlimited_route_modes or set())
         route_ids = []
-        for index in range(max(1, int(route_candidate_limit))):
+        route_task_count = 1 if unlimited else max(1, int(route_candidate_limit))
+        for index in range(route_task_count):
             route_id = f"route:{atom_id}:{index}"
             route_ids.append(route_id)
             tasks.append(TaskNode(
@@ -101,7 +104,10 @@ def compile_condition_graph(
                 candidate_reduction=0.10,
                 user_importance=2.0,
                 metadata={
-                    "kind": "route_candidate", "atom_id": atom_id,
+                    "kind": ("route_candidate_batch" if unlimited
+                             else "route_candidate"),
+                    "unlimited_candidate_batch": unlimited,
+                    "atom_id": atom_id,
                     "candidate_index": index, "mode": mode,
                 },
             ))
@@ -145,4 +151,3 @@ def report_resource_limits(openai_capacity: int = 6) -> ResourceLimits:
             tokens_per_minute=200_000,
         )
     })
-
