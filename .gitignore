@@ -7,7 +7,7 @@ deploy/PRIVATE_ACCESS.txt
 
 # 사용자가 전달한 원본 부동산 PDF 묶음(라이선스/개인정보 확인 전 Git 제외)
 0_*pdf_*/
-deploy/*.private.env
+*.private.env
 *.pem
 *.key
 *.p12
