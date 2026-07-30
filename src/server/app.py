@@ -354,7 +354,13 @@ def gui():
     html_path = Path(__file__).with_name("gui.html")
     if not html_path.exists():
         raise HTTPException(404, "gui.html not found")
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    # NAVER Dynamic Map validates the registered web-service origin. Preserve
+    # only the scheme/host on cross-origin requests (never paths or query
+    # data), matching deploy/nginx.conf so local dev behaves like production.
+    return HTMLResponse(
+        html_path.read_text(encoding="utf-8"),
+        headers={"Referrer-Policy": "strict-origin-when-cross-origin"},
+    )
 
 
 @app.get("/assets/youth-home-hero-v1.png", include_in_schema=False)
