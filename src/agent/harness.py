@@ -115,38 +115,47 @@ def _classify_goal_finance(programs: list[dict], affordability) -> tuple[list[di
     monthly_cap = float(affordability.max_monthly_housing_manwon)
     for program in direct:
         reported_limit = float(program.get("max_amount_manwon") or 0)
+        if reported_limit <= 0:
+            continue
         rate = program.get("rate_pct")
-        # 전세자금대출을 이자만 납부하는 1차 시뮬레이션. 금리가 없으면 상환능력을
-        # 검증할 수 없으므로 예산 증액에는 반영하지 않는다.
-        service_limit = 0.0
         if rate is not None and float(rate) > 0:
+            # 전세자금대출을 이자만 납부하는 1차 상환능력 시뮬레이션.
             service_limit = monthly_cap * 12 / (float(rate) / 100)
-        effective_limit = min(reported_limit, service_limit) \
-            if reported_limit > 0 and service_limit > 0 else 0.0
-        evaluated.append((effective_limit, program, service_limit))
+            effective_limit = min(reported_limit, service_limit)
+            capacity_verified = True
+        else:
+            # 금리 데이터가 없어 상환능력을 검증하지 못한다. 이 경우 신고된
+            # 한도 자체를 0으로 무시하지 않고, 검증 필요 표시와 함께 그대로
+            # 후보에 포함한다(최종 한도는 어차피 금융기관 심사에서 확정됨).
+            effective_limit = reported_limit
+            capacity_verified = False
+        evaluated.append((effective_limit, program, capacity_verified))
     evaluated.sort(key=lambda item: item[0], reverse=True)
-    selected = evaluated[0] if evaluated and evaluated[0][0] > 0 else None
+    selected = evaluated[0] if evaluated else None
 
     base_budget = float(affordability.recommended_jeonse_deposit_manwon)
     loan_limit = selected[0] if selected else 0.0
+    capacity_verified = selected[2] if selected else None
     plan = {
         "base_jeonse_budget_manwon": round(base_budget, 1),
         "direct_loan_limit_manwon": round(loan_limit, 1),
         "estimated_max_deposit_manwon": round(base_budget + loan_limit, 1),
         "selected_program_id": selected[1].get("program_id") if selected else None,
         "selected_program_name": selected[1].get("name") if selected else None,
+        "selected_program_repayment_capacity_verified": capacity_verified,
         "reviewed_program_count": len(programs),
         "direct_finance_count": len(direct),
         "ancillary_support_count": len(ancillary),
         "method": "자기자금 적정 전세예산 + 단일 직접 전세자금대출의 유효 한도",
         "assumptions": [
             "여러 대출 한도를 합산하지 않고 가장 큰 유효 한도 하나만 사용",
-            "대출은 표시 금리의 이자만 납부하는 1차 상환능력 시뮬레이션",
+            "금리가 확인되는 상품은 표시 금리의 이자만 납부하는 1차 상환능력으로 한도를 검증",
+            "금리 미확인 상품은 상환능력 검증 없이 신고된 한도를 그대로 사용(최종 심사 필요)",
             "실제 한도·보증비율·자격은 금융기관 및 보증기관 최종 심사 필요",
         ],
         "limitation": (
             None if selected else
-            "현재 금융 DB에서 금리와 한도가 확인되는 직접 전세자금 상품을 찾지 못해 "
+            "현재 금융 DB에서 한도가 확인되는 직접 전세자금 상품을 찾지 못해 "
             "전세예산을 임의로 늘리지 않았습니다."
         ),
     }
@@ -760,9 +769,14 @@ class JeonseAgent:
 
         if financing_plan["selected_program_name"]:
             message = (
-                f"직접 전세자금 후보를 반영한 추정 예산 {budget:,.0f}만원 안에서 "
-                "보증금이 가장 높은 전세 매물을 골랐습니다."
+                f"'{financing_plan['selected_program_name']}' 등 직접 전세자금 후보를 반영한 "
+                f"추정 예산 {budget:,.0f}만원 안에서 보증금이 가장 높은 전세 매물을 골랐습니다."
             )
+            if financing_plan.get("selected_program_repayment_capacity_verified") is False:
+                message += (
+                    " 이 상품은 금리 정보가 DB에 없어 상환능력은 검증하지 못했고, "
+                    "금융기관이 공시한 한도를 그대로 반영했습니다. 실제 한도는 심사 후 확정됩니다."
+                )
         else:
             message = (
                 "현재 금융 DB에는 보증금을 늘릴 수 있는 직접 전세자금 상품이 없어 "
