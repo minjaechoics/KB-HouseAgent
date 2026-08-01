@@ -524,6 +524,20 @@ def test_reject_if_zero_match_allows_conditions_with_real_data():
     assert result is None
 
 
+def test_gui_contract_risk_ring_color_uses_grade_not_inverted_default():
+    """scoreRing()의 기본 색상 로직(score>=75 초록/<50 빨강)은 safety_score
+    처럼 '높을수록 좋음'인 지표에는 맞지만, fraud_score처럼 '높을수록
+    위험'인 지표에 그대로 쓰면 반대로 표시된다(고위험 80%가 초록, 저위험
+    10%가 빨강). renderContractRisk는 반드시 gradeColor(grade)를 3번째
+    인자로 넘겨 기본 로직을 덮어써야 한다(renderJeonsePrimaryRisk와 동일)."""
+    gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
+        encoding="utf-8")
+    import re
+    match = re.search(r"renderContractRisk=function\(p,cs\)\{.*?\};", gui)
+    assert match, "renderContractRisk definition not found"
+    assert "scoreRing(Number(score)*100,grade,gradeColor(grade))" in match.group(0)
+
+
 def test_gui_contract_risk_headline_keys_off_backend_grade():
     """backend grade는 비용가중 임계값(~4.8%)으로, 위험신호가 적다는 문구를
     별도의 하드코딩된 0.35/0.65 임계값으로 고르면 grade="위험"인데 문구는
