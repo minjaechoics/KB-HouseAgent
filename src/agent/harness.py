@@ -32,7 +32,7 @@ from src.tools.finance_tool import FinanceTool
 from src.tools.property_db_tool import PropertyDBTool
 from src.server.property_search import AtomicPropertySearch, atoms_from_slots, make_atom
 from src.tools.advisory_tools import contract_checklist, cost_breakdown
-from src.tools.external_tools import POISearchTool
+from src.tools.external_tools import CATEGORY_KO
 from src.tools.safety_tool import SafetyTool
 from src.tools.convenience_tool import ConvenienceTool
 from src.tools.registry_tool import registry_check_guide
@@ -224,9 +224,11 @@ class JeonseAgent:
         self.finance_tool = FinanceTool()
         self.db_tool = PropertyDBTool()
         self.property_search = AtomicPropertySearch(map_tool=self.map_tool)
-        self.poi_tool = POISearchTool()
         self.safety_tool = SafetyTool()
         self.convenience_tool = ConvenienceTool()
+        # 매물 주변 시설 검색(qa_poi)은 카카오 대신 ConvenienceTool이 이미 쓰는
+        # NAVER API HUB 지역검색 클라이언트를 공유한다(같은 호출 한도 추적기 재사용).
+        self.poi_search = self.convenience_tool.local_search
         self.text2sql = Text2SQLPipeline(self.llm, self.db_tool, self.finance_tool)
         self.recommender_name = recommender_name
         self._reco = self._load_recommender(recommender_name)
@@ -962,8 +964,21 @@ class JeonseAgent:
         if intent == "qa_poi":
             # 좌표가 필요 → 최근 추천 지역 중심 또는 사용자 선호지역 예시
             lat, lng = 37.4784, 126.9516  # 관악구 예시(실서비스는 선택 매물 좌표)
-            r = self.poi_tool.search(lat, lng, args.get("category", "subway"), 1000)
-            trace["tools"].append({"tool": "poi_search", "ok": True})
+            category = args.get("category", "subway")
+            keyword = CATEGORY_KO.get(category, category)
+            naver_result = self.poi_search.search(lat, lng, "", keyword, 1000)
+            r = {
+                "category": category,
+                "count": naver_result.get("count"),
+                "nearest_m": (naver_result["places"][0]["distance_m"]
+                             if naver_result.get("places") else None),
+                "places": naver_result.get("places", []),
+                "source": naver_result.get("source"),
+            }
+            trace["tools"].append({
+                "tool": "poi_search", "provider": "naver_api_hub_local",
+                "ok": bool(naver_result.get("available")),
+            })
             return self._finalize(text, {"status": "qa", "qa_type": "poi", "result": r,
                     "note": "특정 매물 주변으로 조회하려면 매물을 선택해 주세요."}, trace)
 
