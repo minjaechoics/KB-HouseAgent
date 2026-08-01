@@ -256,7 +256,10 @@ def atoms_from_slots(slots: dict, source_text: str, map_tool: MapTool) -> tuple[
     if slots.get("region_sido"):
         atoms.append(make_atom(field="sido", operator="eq", value=slots["region_sido"],
                                label=f"{slots['region_sido']} 지역", source=source))
-    if slots.get("region_gugun"):
+    if slots.get("region_gugun") and not slots.get("region_dong"):
+        # region_dong이 있으면 구/군 정보는 항상 그 동에 종속되므로 생략한다.
+        # LLM이 짧은 구 이름("팔달구")만 뽑아내면 DB의 실제 값("수원시 팔달구")과
+        # 불일치해 검색이 0건이 되므로, 동이 함께 있을 때는 이 atom 자체를 만들지 않는다.
         values = slots["region_gugun"]
         atoms.append(make_atom(field="gugun", operator="in", value=values,
                                label=f"{_display_value(values)} 지역", source=source))

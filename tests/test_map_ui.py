@@ -404,6 +404,21 @@ def test_new_category_slots_produce_expected_atoms():
     assert notes == []
 
 
+def test_region_gugun_dropped_when_region_dong_present():
+    """LLM이 구/군 없이 동만 인식하면 짧은 구 이름("팔달구")을 뽑아낼 수 있는데,
+    DB의 실제 값은 "수원시 팔달구"라 형식이 어긋나 검색이 0건이 된다. 동이 이미
+    구/군을 함의하므로 region_gugun atom 자체를 만들지 않아 이 불일치를 막는다."""
+    slots = {"region_gugun": ["팔달구"], "region_dong": ["인계동"]}
+    atoms, _ = atoms_from_slots(slots, "", OfflineMap())
+    fields = {atom["field"] for atom in atoms}
+    assert "gugun" not in fields
+    assert "dong" in fields
+
+    slots_no_dong = {"region_gugun": ["팔달구"]}
+    atoms_no_dong, _ = atoms_from_slots(slots_no_dong, "", OfflineMap())
+    assert any(atom["field"] == "gugun" for atom in atoms_no_dong)
+
+
 def test_dong_and_mart_walk_minutes_are_queryable_via_clause():
     initial = make_initial_scope_atom(atoms_from_profile({
         "preferred_sido": "경기", "preferred_gugun": "수원시 팔달구",
