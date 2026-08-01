@@ -127,6 +127,48 @@ def test_finance_comparison_does_not_hide_applicable_products_after_eight():
     assert len(result["finance_comparison"]["options"]) == 12
 
 
+def test_needs_review_program_is_still_usable_for_funding():
+    """"구매가능" 필터(harness._classify_transaction_finance)는 자격요건
+    미입력으로 eligibility_status가 needs_review인 상품도 "가입한다고
+    가정하면 조달 가능"으로 취급한다. 상세 리포트의 simulate()가 이를
+    preliminarily_eligible만 인정해 제외하면, 같은 매물이 필터에서는
+    구매가능으로 나오고 상세페이지에서는 조달불가로 나오는 모순이 생긴다."""
+    programs = [{
+        "program_id": "p1", "name": "청년 전세자금대출",
+        "category": "전세자금대출", "product_kind": "대출",
+        "rate_pct": 3.0, "max_amount_manwon": 20000,
+        "eligibility_status": "needs_review",
+    }]
+    result = simulate(
+        {"age": 30, "monthly_income_manwon": 400,
+         "total_asset_manwon": 3000, "monthly_living_cost_manwon": 100},
+        {"transaction_type": "전세", "deposit_manwon": 10000},
+        {"annual_growth_rate": 0.01, "annual_low": 0, "annual_high": 0.02},
+        programs, {"simulation_end_age": 32},
+    )
+    assert result["funding"]["eligible_product_count"] == 1
+    assert result["funding"]["feasible_with_known_products"] is True
+    assert result["funding"]["known_product_loan_manwon"] > 0
+
+
+def test_not_eligible_program_is_still_excluded_from_funding():
+    programs = [{
+        "program_id": "p1", "name": "청년 전세자금대출",
+        "category": "전세자금대출", "product_kind": "대출",
+        "rate_pct": 3.0, "max_amount_manwon": 20000,
+        "eligibility_status": "not_eligible",
+    }]
+    result = simulate(
+        {"age": 30, "monthly_income_manwon": 400,
+         "total_asset_manwon": 3000, "monthly_living_cost_manwon": 100},
+        {"transaction_type": "전세", "deposit_manwon": 10000},
+        {"annual_growth_rate": 0.01, "annual_low": 0, "annual_high": 0.02},
+        programs, {"simulation_end_age": 32},
+    )
+    assert result["funding"]["eligible_product_count"] == 0
+    assert result["funding"]["known_product_loan_manwon"] == 0
+
+
 def test_finance_comparison_amortizes_purchase_loan():
     result = simulate(
         {"age": 30, "monthly_income_manwon": 400, "total_asset_manwon": 5000,

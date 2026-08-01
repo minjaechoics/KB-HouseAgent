@@ -444,6 +444,21 @@ def test_safety_tool():
     assert r["sources"]["cctv"] == "raw"
     assert r["raw_data"]["emergency_bell"]["status"] == "ready"
     assert r["raw_data"]["police"]["raw_rows"] > 0
+
+
+def test_safety_tool_walk_minutes_consistent_with_search_condition():
+    """반경 300m 집계와 별개로, 검색조건(경찰서 도보 N분 이내)과 같은 기준
+    (하버사인 + 도보 4.5km/h·도로계수 1.25)으로 도보시간을 추정해야 한다.
+    두 지표가 다른 기준을 쓰면 "도보 15분 이내"로 검색된 매물의 리포트에
+    "반경 300m 내 0개"만 보여 모순으로 보인다."""
+    from src.tools.safety_tool import SafetyTool
+    tool = SafetyTool()
+    r = tool.assess(37.5855, 126.9707)
+    assert "nearest_walk_minutes" in r
+    assert set(r["nearest_walk_minutes"]) == {"police", "fire_station"}
+    direct = tool.nearest_station_walk_minutes(37.5855, 126.9707, "police")
+    assert direct is not None and direct >= 0
+    assert r["nearest_walk_minutes"]["police"] == direct
     assert r["raw_data"]["fire_station"]["raw_rows"] > 0
     assert not any(str(source).startswith("mock")
                    for source in r["sources"].values())

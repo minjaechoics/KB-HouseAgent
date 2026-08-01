@@ -524,6 +524,19 @@ def test_reject_if_zero_match_allows_conditions_with_real_data():
     assert result is None
 
 
+def test_gui_contract_risk_headline_keys_off_backend_grade():
+    """backend grade는 비용가중 임계값(~4.8%)으로, 위험신호가 적다는 문구를
+    별도의 하드코딩된 0.35/0.65 임계값으로 고르면 grade="위험"인데 문구는
+    "위험 신호가 비교적 적어요"로 나오는 모순이 생길 수 있다(예: 점수 30%).
+    문구는 반드시 grade 자체에서 파생돼야 한다."""
+    gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
+        encoding="utf-8")
+    assert "Number(score)<.35" not in gui
+    assert "gradeHeadline" in gui
+    assert gui.count("function renderContractRisk") + gui.count(
+        "renderContractRisk=function") == 1
+
+
 def test_gui_shows_short_category_chips_and_affordability_toggle():
     gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
         encoding="utf-8")

@@ -204,6 +204,28 @@ class SafetyTool:
         mask = _distance_mask(nearby, lat, lng, radius_m)
         return int(nearby.loc[mask, "weight"].sum())
 
+    def nearest_station_walk_minutes(self, lat: float, lng: float,
+                                     key: str) -> float | None:
+        """가장 가까운 시설까지 도보 예상 시간(분)을 하버사인 거리로 추정한다.
+
+        고정 반경(RADIUS_M) 집계와 별개의 지표다 — 도보 15분(~1km)권 시설도
+        300m 반경 집계에서는 0건으로 보여 조건 필터 결과와 모순돼 보일 수
+        있으므로, 검색 조건(police_distance_minutes atom)과 동일한 도보속도
+        4.5km/h·도로계수 1.25를 재사용해 같은 기준으로 계산한다.
+        """
+        df = self._load(key)
+        if df is None or "lat" not in df.columns or "lng" not in df.columns or df.empty:
+            return None
+        lat1, lng1 = math.radians(lat), math.radians(lng)
+        lat2 = np.radians(df["lat"].to_numpy(dtype=float))
+        lng2 = np.radians(df["lng"].to_numpy(dtype=float))
+        dlat, dlng = lat2 - lat1, lng2 - lng1
+        a = np.sin(dlat / 2.0) ** 2 + math.cos(lat1) * np.cos(lat2) * np.sin(dlng / 2.0) ** 2
+        distance_km = 6371.0 * 2.0 * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
+        nearest_km = float(distance_km.min())
+        walk_speed_kmh, road_factor = 4.5, 1.25
+        return round(nearest_km / walk_speed_kmh * 60.0 * road_factor, 1)
+
     def geocoding_templates(self) -> dict[str, str]:
         """주소 전용 원본을 lat/lng 보강용 CSV 템플릿으로 내보낸다."""
         GEOCODED_DIR.mkdir(parents=True, exist_ok=True)
@@ -261,6 +283,10 @@ class SafetyTool:
         score = round(min(100.0, raw_score / 120.0 * 100), 1) if available else None
         grade = ("조회 불가" if score is None else
                  ("안전" if score >= 60 else ("보통" if score >= 30 else "주의")))
+        nearest_walk_minutes = {
+            key: self.nearest_station_walk_minutes(lat, lng, key)
+            for key in ("police", "fire_station")
+        }
         return {
             "radius_m": radius_m,
             "counts": counts,
@@ -272,6 +298,10 @@ class SafetyTool:
             "coverage": {"available": len(available), "total": len(counts)},
             "raw_data": dict(self._metadata),
             "cctv_anchor_excluded": bool(exclude_cctv_anchor),
+            # 300m 반경 집계와 별개로, 검색조건(경찰서 도보 N분 이내)과 같은
+            # 기준(하버사인 + 도보 4.5km/h·도로계수 1.25)으로 추정한 도보시간.
+            # 반경 밖이라 count=0이어도 도보로는 가까울 수 있어 함께 표시한다.
+            "nearest_walk_minutes": nearest_walk_minutes,
             "detail_ko": {
                 "cctv": "방범 CCTV", "emergency_bell": "안전 비상벨",
                 "police": "치안센터/파출소", "fire_station": "소방서",

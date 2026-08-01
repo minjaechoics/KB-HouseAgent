@@ -399,9 +399,14 @@ def simulate(user: dict, prop: dict, forecast: dict, programs: list[dict],
         _effective_rate_pct(p, float(assumptions["fallback_financing_rate"]))[0],
         -float(p.get("max_amount_manwon") or 0),
     ))
+    # "구매가능" 필터(harness.py의 _classify_transaction_finance)는 자격요건이
+    # 미입력이라 "needs_review"인 상품도 "가입한다고 가정하면 조달 가능"으로
+    # 취급해 후보에 포함한다. 여기서 "preliminarily_eligible"만 통과시키면
+    # 같은 매물이 필터에서는 구매가능으로 나오고 상세페이지에서는 조달불가로
+    # 나오는 모순이 생기므로, 명백히 불충족(not_eligible)인 상품만 제외한다.
     eligible_compatible = [
         p for p in compatible
-        if p.get("eligibility_status") in (None, "", "preliminarily_eligible")
+        if p.get("eligibility_status") != "not_eligible"
     ]
     selected_program_id = str(assumptions.get("selected_finance_program_id") or "")
     candidate_projections = [
