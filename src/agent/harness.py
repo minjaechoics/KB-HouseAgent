@@ -27,7 +27,7 @@ from src.agent.planner import parse_confirmation, Plan
 from src.agent.text2sql import Text2SQLPipeline
 from src.agent import atoms as A
 from src.preference.affordability import compute_affordability
-from src.tools.map_tool import MapTool
+from src.tools.map_tool import MapTool, SIDO_GUGUN_CENTROIDS
 from src.tools.finance_tool import FinanceTool
 from src.tools.property_db_tool import PropertyDBTool
 from src.server.property_search import AtomicPropertySearch, atoms_from_slots, make_atom
@@ -892,6 +892,23 @@ class JeonseAgent:
             "commute_regions": [],
         }, trace)
 
+    @staticmethod
+    def _reference_point(session, user) -> tuple[float, float, str, int]:
+        """선택 매물이 있으면 그 좌표/주소(반경 1km), 없으면 사용자 선호지역
+        중심좌표(반경 5km, 텍스트 검색이라 동 단위 정밀도가 없어 더 넓게 잡음)로 폴백."""
+        report = session.get("last_property_report") or {}
+        prop = report.get("property") or {}
+        if prop.get("lat") is not None and prop.get("lng") is not None:
+            context = " ".join(
+                str(part) for part in
+                (prop.get("sido"), prop.get("gugun"), prop.get("dong")) if part
+            )
+            return float(prop["lat"]), float(prop["lng"]), context, 1000
+        sido = user.get("preferred_sido") or "경기"
+        gugun = user.get("preferred_gugun") or "수원시 팔달구"
+        lat, lng = SIDO_GUGUN_CENTROIDS.get((sido, gugun), (37.4784, 126.9516))
+        return lat, lng, f"{sido} {gugun}".strip(), 5000
+
     def _handle_qa(self, session, plan: Plan, text: str, trace: dict) -> dict:
         user = session["user"]
         intent = plan.intent
@@ -962,11 +979,10 @@ class JeonseAgent:
                     "note": "특정 매물 기준으로 계산하려면 매물을 선택해 주세요."}, trace)
 
         if intent == "qa_poi":
-            # 좌표가 필요 → 최근 추천 지역 중심 또는 사용자 선호지역 예시
-            lat, lng = 37.4784, 126.9516  # 관악구 예시(실서비스는 선택 매물 좌표)
+            lat, lng, context, radius_m = self._reference_point(session, user)
             category = args.get("category", "subway")
             keyword = CATEGORY_KO.get(category, category)
-            naver_result = self.poi_search.search(lat, lng, "", keyword, 1000)
+            naver_result = self.poi_search.search(lat, lng, context, keyword, radius_m)
             r = {
                 "category": category,
                 "count": naver_result.get("count"),
@@ -1037,15 +1053,15 @@ class JeonseAgent:
                     "guide": registry_check_guide(text)}, trace)
 
         if intent == "qa_safety":
-            lat, lng = 37.4784, 126.9516  # 예시 좌표(실서비스는 선택 매물 좌표)
-            r = self.safety_tool.assess(lat, lng)
+            lat, lng, context, _ = self._reference_point(session, user)
+            r = self.safety_tool.assess(lat, lng, context=context)
             trace["tools"].append({"tool": "safety_assess", "ok": True})
             return self._finalize(text, {"status": "qa", "qa_type": "safety", "result": r,
                     "note": "특정 매물 주변으로 조회하려면 매물을 선택해 주세요."}, trace)
 
         if intent == "qa_convenience":
-            lat, lng = 37.4784, 126.9516
-            r = self.convenience_tool.assess(lat, lng)
+            lat, lng, context, _ = self._reference_point(session, user)
+            r = self.convenience_tool.assess(lat, lng, context=context)
             trace["tools"].append({"tool": "convenience_assess", "ok": True})
             return self._finalize(text, {"status": "qa", "qa_type": "convenience", "result": r,
                     "note": "특정 매물 주변으로 조회하려면 매물을 선택해 주세요."}, trace)
