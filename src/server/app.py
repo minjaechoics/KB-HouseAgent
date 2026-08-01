@@ -139,6 +139,13 @@ class SessionCreate(BaseModel):
     fixed_date_possible: Optional[bool] = None
     senior_mortgage_established_date: Optional[date] = None
     wants_guarantee_insurance: Optional[bool] = None
+    # 신용대출·자동차대출 사전 판정용. 모르면 비워두고 심사 필요로 표시한다.
+    credit_grade: Optional[int] = Field(default=None, ge=1, le=10)
+    vehicle_price_manwon: Optional[float] = Field(default=None, ge=0)
+    vehicle_purchase_type: Optional[str] = Field(
+        default=None,
+        pattern="^(new_purchase|used_purchase|new_refinance|used_refinance)$",
+    )
     preferences: PreferenceProfileIn = Field(default_factory=PreferenceProfileIn)
 
 

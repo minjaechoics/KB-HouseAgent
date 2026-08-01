@@ -68,6 +68,9 @@ class FinanceTool:
                 q += (" AND (employment_type_codes IS NULL OR employment_type_codes = '' OR "
                       "instr(',' || replace(employment_type_codes, ' ', '') || ',', ',' || ? || ',') > 0)")
                 params.append(employment_type)
+                if employment_type != "business":
+                    q += (" AND (requires_business_registration IS NULL OR "
+                          "requires_business_registration = 0)")
             marital_status = profile.get("marital_status")
             if marital_status:
                 q += (" AND (eligible_marital_status_codes IS NULL OR "
@@ -171,6 +174,11 @@ class FinanceTool:
         employment_codes = _codes(result.get("employment_type_codes"))
         if employment and employment_codes and employment not in employment_codes:
             failures.append("직업 유형 조건 불충족")
+        if result.get("requires_business_registration"):
+            if employment is None:
+                reviews.append("직업 유형(사업자 여부) 미입력")
+            elif employment != "business":
+                failures.append("개인사업자 대상 상품")
         if result.get("requires_korean_national") and profile.get("is_korean_national") is False:
             failures.append("내국인 조건 불충족")
         if result.get("requires_income_proof") and profile.get("has_income_proof") is False:
@@ -185,7 +193,11 @@ class FinanceTool:
         if result.get("detail_verified") in (None, 0, 0.0, "0") and result.get("provider"):
             reviews.append("상세 신청자격이 수집되지 않아 상품 원문 확인 필요")
         if result.get("requires_css_review"):
-            reviews.append("KB CSS 신용심사 필요")
+            credit_grade = profile.get("credit_grade")
+            reviews.append(
+                f"KB CSS 신용심사 필요(입력 신용등급 {int(credit_grade)}등급 참고)"
+                if credit_grade is not None else "KB CSS 신용심사 필요"
+            )
         if result.get("requires_guarantee_review"):
             reviews.append("보증기관 보증서 발급 심사 필요")
         if result.get("requires_korean_national") and profile.get("is_korean_national") is None:
@@ -303,6 +315,20 @@ class FinanceTool:
                 "계약금 5%", contract_paid is not None, contract_paid is True,
                 "지급" if contract_paid is True else (
                     "미지급" if contract_paid is False else "미입력"),
+            )
+        if result.get("requires_business_registration"):
+            add_check(
+                "사업자등록", employment is not None, employment == "business",
+                f"입력 {employment or '-'} · 개인사업자·사업소득자 대상",
+            )
+        if result.get("category") == "자동차대출" and result.get("max_amount_manwon") is not None:
+            vehicle_price = profile.get("vehicle_price_manwon")
+            add_check(
+                "차량가액 대비 한도", vehicle_price is not None,
+                vehicle_price is not None
+                and float(vehicle_price) <= float(result["max_amount_manwon"]),
+                f"입력 {vehicle_price:,.0f}만원" if vehicle_price is not None
+                else "차량가액 미입력",
             )
         result["eligibility_checks"] = checks
         result["eligibility_disclaimer"] = "예비 판정이며 KB국민은행·보증기관의 최종 심사를 대체하지 않습니다."

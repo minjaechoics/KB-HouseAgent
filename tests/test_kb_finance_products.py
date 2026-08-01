@@ -71,3 +71,76 @@ def test_gui_collects_finance_precheck_fields():
         "추가 심사 필요",
     ):
         assert value in gui
+
+
+def test_gui_collects_credit_and_vehicle_loan_precheck_fields():
+    gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
+        encoding="utf-8"
+    )
+    for value in (
+        'id="creditGrade"', 'id="vehiclePurchaseType"', 'id="vehiclePrice"',
+        "credit_grade:", "vehicle_purchase_type:", "vehicle_price_manwon:",
+    ):
+        assert value in gui
+
+
+def test_kb_v2_rescrape_refreshed_rate_and_disclosure_data():
+    """재수집한 KB 상세 페이지(Playwright)에서 얻은 금리·자격요건이
+    kb_kookmin_loan_products.csv(정규화 워크북과 별개로, build_finance_db가
+    직접 읽는 원본)에 반영되어 있는지 확인한다(과거 정적 스크래핑은 카테고리
+    목록만 반복 저장해 상품별 실제 금리가 전혀 없었음)."""
+    import pandas as pd
+    frame = pd.read_csv(config.KB_LOAN_CSV, dtype={"program_id": str})
+    house_loan = frame.loc[frame["name"] == "KB 주택담보대출"].iloc[0]
+    assert house_loan["current_disclosure_verified"] == 1
+    assert house_loan["rate_min_pct"] > 0
+    assert house_loan["rate_max_pct"] > house_loan["rate_min_pct"]
+    assert "담보" in house_loan["eligibility_text"]
+    assert (frame["requires_business_registration"] == 1).sum() > 0
+
+
+def test_business_registration_gate_excludes_non_business_employment(tmp_path: Path):
+    db = tmp_path / "finance.db"
+    with sqlite3.connect(db) as connection:
+        build_finance_db(connection)
+    tool = FinanceTool(db)
+    employee_rows = tool.search(
+        category="개인사업자대출", user_profile={"employment_type": "employee"},
+        limit=200,
+    )
+    assert employee_rows == []
+
+    business_rows = tool.search(
+        category="개인사업자대출", user_profile={"employment_type": "business"},
+        limit=200,
+    )
+    assert len(business_rows) > 0
+    for row in business_rows:
+        checks = {c["label"]: c for c in row["eligibility_checks"]}
+        assert checks["사업자등록"]["status"] == "passed"
+
+    unknown_rows = tool.search(category="개인사업자대출", user_profile={}, limit=200)
+    assert len(unknown_rows) > 0
+    assert any(
+        "사업자 여부" in review
+        for row in unknown_rows for review in row["eligibility_reviews"]
+    )
+
+
+def test_vehicle_price_check_flags_over_limit_auto_loan(tmp_path: Path):
+    db = tmp_path / "finance.db"
+    with sqlite3.connect(db) as connection:
+        build_finance_db(connection)
+    tool = FinanceTool(db)
+    rows = tool.search(
+        category="자동차대출", user_profile={"vehicle_price_manwon": 100_000},
+        limit=200,
+    )
+    assert len(rows) > 0
+    capped = [r for r in rows if r.get("max_amount_manwon")]
+    assert capped, "at least one auto loan row should carry a numeric loan limit"
+    for row in capped:
+        check = next(
+            c for c in row["eligibility_checks"] if c["label"] == "차량가액 대비 한도"
+        )
+        assert check["status"] == "failed"
