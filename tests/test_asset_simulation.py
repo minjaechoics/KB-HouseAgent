@@ -169,15 +169,22 @@ def test_finance_comparison_repays_rental_principal_from_returned_deposit():
     assert option["payoff_age"] == 27
 
 
-def test_gui_exposes_landing_finance_comparison_and_safe_debug_trace():
+def test_gui_exposes_landing_finance_comparison():
     gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
         encoding="utf-8")
     for token in ("landingView", "landingStart", "youth-home-hero-v1.png",
                   "financeComparison", "data-finance-series",
-                  "금융상품별 자산 변화 비교", "최종 확인",
-                  "debugTraceText(state.trace)"):
+                  "금융상품별 자산 변화 비교", "최종 확인"):
         assert token in gui
-    assert "debugText').textContent=JSON.stringify(state.trace" not in gui
+
+
+def test_gui_has_no_debug_trace_panel():
+    """실서비스 화면에는 RAG DEBUG 버튼·트레이스 패널을 노출하지 않는다."""
+    gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
+        encoding="utf-8")
+    for token in ("debugBtn", "debugPanel", "debugClose", "debugText",
+                  "debugTraceText", "sanitizeTrace", "RAG DEBUG"):
+        assert token not in gui
 
 
 def test_purchase_finance_recognizes_mortgage_but_not_subscription_account():
