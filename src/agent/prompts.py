@@ -107,10 +107,17 @@ CONDITION_DIALOGUE_SYSTEM_PROMPT = """# Identity
 # Slot contract
 - 금액은 만원, 시간은 분, 면적은 ㎡다.
 - commute_mode는 transit, walking, driving 중 하나다.
-- workplace_landmark와 max_commute_min은 함께 있어야 이동 조건을 확정할 수 있다.
+- workplace_landmark와 max_commute_min은 함께 있어야 이동 조건을 확정할 수 있다(통근시간).
 - slots에는 이번 대화에서 합의하거나 제안 중인 조건을 누적해 반환한다.
 - 위험도는 매물 제외 조건이 아니다. 안전 선호는 sort_by=risk_asc로만 표현하며
   max_fraud_score나 safety_is_hard를 만들지 않는다.
+- region_dong은 "우만동"처럼 동 단위 지역명이다. region_gugun(시군구)과는 별개이며
+  동만 말했으면 region_dong만 채우고 region_gugun을 추측해 채우지 않는다.
+- max_subway_walk_min(접근성)은 대중교통역까지, max_facility_walk_min(편의성)은
+  편의시설(마트 등)까지, max_police_distance_min(안전성)은 경찰서까지의 도보 예상
+  시간(분)이다. 이 셋은 workplace_landmark 없이도 독립적으로 성립하는 조건이다.
+- min_room_count는 방 개수 하한, elevator_required/pet_allowed_required는
+  각각 엘리베이터 유무·반려동물 가능 여부를 사용자가 요구했을 때만 true로 채운다.
 
 # Examples
 <example id="landmark-only">
@@ -133,6 +140,14 @@ CONDITION_DIALOGUE_SYSTEM_PROMPT = """# Identity
 사용자: 아주대 대중교통 20분 이내, 월세 60만원 이하
 결정: ask_confirmation
 메시지: 아주대 대중교통 예상 20분 이내와 월세 60만원 이하를 조건으로 추가할까요?
+</example>
+
+<example id="multi-category">
+사용자: 우만동에서 지하철 10분 이내, 방 2개 이상에 엘리베이터 있는 전세로
+결정: ask_confirmation
+메시지: 우만동 · 전세 · 지하철역 도보 10분 이내 · 방 2개 이상 · 엘리베이터 있음을 조건으로 추가할까요?
+슬롯: region_dong=["우만동"], transaction_type="전세", lease_type="전세",
+max_subway_walk_min=10, min_room_count=2, elevator_required=true
 </example>
 
 # Context handling
@@ -328,6 +343,13 @@ CONDITION_DECISION_JSON_SCHEMA = {
                 "min_safety_score": _nullable("number"),
                 "min_convenience_score": _nullable("number"),
                 "workplace_landmark": _nullable("string"),
+                "region_dong": {"type": ["array", "null"], "items": {"type": "string"}},
+                "max_subway_walk_min": _nullable("number"),
+                "max_facility_walk_min": _nullable("number"),
+                "max_police_distance_min": _nullable("number"),
+                "min_room_count": _nullable("number"),
+                "elevator_required": _nullable("boolean"),
+                "pet_allowed_required": _nullable("boolean"),
             },
             "required": [
                 "transaction_type", "lease_type", "property_type", "region_sido",
@@ -335,7 +357,9 @@ CONDITION_DECISION_JSON_SCHEMA = {
                 "max_monthly_rent_manwon", "max_maintenance_manwon", "sort_by",
                 "max_commute_min", "commute_mode", "min_area_m2", "max_building_age",
                 "min_safety_score", "min_convenience_score",
-                "workplace_landmark",
+                "workplace_landmark", "region_dong", "max_subway_walk_min",
+                "max_facility_walk_min", "max_police_distance_min", "min_room_count",
+                "elevator_required", "pet_allowed_required",
             ],
         },
         "proposed_defaults": {

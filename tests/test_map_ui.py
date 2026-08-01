@@ -381,6 +381,100 @@ def test_condition_chat_has_client_and_server_duplicate_response_guards():
     assert "_cached_condition_response" in app
 
 
+def test_new_category_slots_produce_expected_atoms():
+    slots = {
+        "region_dong": ["우만동"], "max_subway_walk_min": 10,
+        "max_facility_walk_min": 15, "max_police_distance_min": 20,
+        "min_room_count": 2, "elevator_required": True,
+        "pet_allowed_required": True,
+    }
+    atoms, notes = atoms_from_slots(slots, "", OfflineMap())
+    by_field = {atom["field"]: atom for atom in atoms}
+    assert by_field["dong"]["operator"] == "in"
+    assert by_field["dong"]["value"] == ["우만동"]
+    assert by_field["subway_walk_minutes"]["operator"] == "lte"
+    assert by_field["subway_walk_minutes"]["value"] == 10.0
+    assert by_field["mart_walk_minutes"]["value"] == 15.0
+    assert by_field["room_count"]["operator"] == "gte"
+    assert by_field["room_count"]["value"] == 2.0
+    assert by_field["elevator_count"]["operator"] == "gt"
+    assert by_field["pet_allowed"]["operator"] == "truthy"
+    assert by_field["police_distance_minutes"]["operator"] == "lte"
+    assert by_field["police_distance_minutes"]["value"] == 20.0
+    assert notes == []
+
+
+def test_dong_and_mart_walk_minutes_are_queryable_via_clause():
+    initial = make_initial_scope_atom(atoms_from_profile({
+        "preferred_sido": "경기", "preferred_gugun": "수원시 팔달구",
+    }))
+    dong_atom = make_atom(field="dong", operator="in", value=["우만동"],
+                          label="우만동 지역", source="test")
+    mart_atom = make_atom(field="mart_walk_minutes", operator="lte", value=15,
+                          label="편의성 15분 이내", source="test")
+    search = AtomicPropertySearch(map_tool=OfflineMap())
+    result = search.search([initial, dong_atom, mart_atom],
+                           {initial["id"], dong_atom["id"], mart_atom["id"]},
+                           limit=10)
+    assert result["total"] >= 0  # 필드가 _clause에서 거부되지 않고 실행됨
+
+
+def test_police_distance_condition_is_monotonic_and_estimated():
+    initial = make_initial_scope_atom(atoms_from_profile({
+        "preferred_sido": "경기", "preferred_gugun": "수원시 팔달구",
+    }))
+    search = AtomicPropertySearch(map_tool=OfflineMap())
+
+    def total_within(minutes):
+        atom = make_atom(field="police_distance_minutes", operator="lte",
+                         value=minutes, label=f"안전성 {minutes}분", source="test")
+        result = search.search([initial, atom], {initial["id"], atom["id"]}, limit=5)
+        return result
+
+    tight = total_within(3)
+    loose = total_within(60)
+    assert tight["total"] <= loose["total"]
+    police_trace = next(
+        t for t in loose["trace"]["per_condition"]
+        if t.get("station_category") == "police")
+    assert police_trace["estimated"] is True
+    assert police_trace["station_count"] > 0
+
+
+def test_budget_caps_filters_returned_rows_by_transaction_type():
+    initial = make_initial_scope_atom(atoms_from_profile({
+        "preferred_sido": "경기", "preferred_gugun": "수원시 팔달구",
+    }))
+    search = AtomicPropertySearch(map_tool=OfflineMap())
+    caps = {
+        "매매": {"sale_price_manwon": 30000.0},
+        "전세": {"deposit_manwon": 10000.0},
+        "월세": {"monthly_rent_manwon": 80.0, "deposit_manwon": 3000.0},
+    }
+    result = search.search([initial], {initial["id"]}, limit=200, budget_caps=caps)
+    for row in result["properties"]:
+        tx = row.get("transaction_type")
+        if tx == "매매":
+            price = row.get("sale_price_manwon") or row.get("asking_price_manwon") or 0
+            assert price <= caps["매매"]["sale_price_manwon"]
+        elif tx == "전세":
+            assert (row.get("deposit_manwon") or 0) <= caps["전세"]["deposit_manwon"]
+        else:
+            assert (row.get("monthly_rent_manwon") or 0) <= caps["월세"]["monthly_rent_manwon"]
+            assert (row.get("deposit_manwon") or 0) <= caps["월세"]["deposit_manwon"]
+
+
+def test_gui_shows_short_category_chips_and_affordability_toggle():
+    gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
+        encoding="utf-8")
+    assert "FIELD_CATEGORY" in gui
+    assert "chipShortText" in gui
+    assert "atomDetail" in gui
+    assert "affordability-toggle" in gui
+    assert "affordability_only" in gui
+    assert "구매가능" in gui
+
+
 if __name__ == "__main__":
     for name, function in list(globals().items()):
         if name.startswith("test_") and callable(function):

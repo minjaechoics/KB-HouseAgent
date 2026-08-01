@@ -56,11 +56,15 @@ def compile_condition_graph(
     ))
     sql_ids: list[str] = []
     commute_atoms: list[dict] = []
+    police_atoms: list[dict] = []
     for atom in atoms:
         if atom is initial:
             continue
         if atom.get("field") == "commute_minutes":
             commute_atoms.append(atom)
+            continue
+        if atom.get("field") == "police_distance_minutes":
+            police_atoms.append(atom)
             continue
         task_id = f"sql:{atom['id']}"
         sql_ids.append(task_id)
@@ -118,9 +122,22 @@ def compile_condition_graph(
             candidate_reduction=0.50, user_importance=2.0,
             metadata={"kind": "commute_intersection", "atom_id": atom_id},
         ))
+    police_ids: list[str] = []
+    for atom in police_atoms:
+        atom_id = str(atom["id"])
+        task_id = f"police:{atom_id}"
+        police_ids.append(task_id)
+        tasks.append(TaskNode(
+            task_id, 6, "cpu", dependencies=narrowing,
+            candidate_reduction=0.30, user_importance=1.8,
+            metadata={
+                "kind": "nearest_station_estimate", "atom_id": atom_id,
+                "station_category": "police",
+            },
+        ))
     tasks.append(TaskNode(
         "sql:final_fetch", 18, "sqlite",
-        dependencies=tuple([*narrowing, *commute_join_ids]),
+        dependencies=tuple([*narrowing, *commute_join_ids, *police_ids]),
         user_importance=2.0,
         metadata={"kind": "final_fetch"},
     ))

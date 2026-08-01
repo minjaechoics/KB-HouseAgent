@@ -321,6 +321,54 @@ def test_finance_goal_budget_excludes_unrelated_loan_products():
     assert plan["estimated_max_deposit_manwon"] == 25000
 
 
+def test_classify_transaction_finance_generalizes_to_sale_direct_terms():
+    from types import SimpleNamespace
+    from src.agent.harness import _classify_transaction_finance
+
+    affordability = SimpleNamespace(max_monthly_housing_manwon=50)
+    programs = [
+        {"program_id": "J", "name": "청년 전세자금대출",
+         "category": "전세대출", "product_kind": "대출",
+         "max_amount_manwon": 20000, "rate_pct": 2.0},
+        {"program_id": "M", "name": "KB 주택구입자금대출",
+         "category": "담보대출", "product_kind": "대출",
+         "max_amount_manwon": 100000, "rate_pct": None},
+    ]
+
+    # 전세 관련 키워드로는 매매용 담보대출(M)을 고르지 않는다.
+    jeonse_plan = _classify_transaction_finance(
+        programs, affordability,
+        direct_terms=("전세자금",), base_budget_manwon=3000.0)
+    assert jeonse_plan["selected_program_id"] == "J"
+    assert jeonse_plan["estimated_max_budget_manwon"] == 23000.0
+
+    # 매매 키워드로는 담보대출(M)을 고르고, 금리가 없어도 신고 한도를 그대로
+    # 쓰되 상환능력 미검증으로 표시한다(전세 버그 수정과 동일한 정책).
+    sale_plan = _classify_transaction_finance(
+        programs, affordability,
+        direct_terms=("담보대출",), base_budget_manwon=5640.0)
+    assert sale_plan["selected_program_id"] == "M"
+    assert sale_plan["direct_loan_limit_manwon"] == 100000.0
+    assert sale_plan["estimated_max_budget_manwon"] == 105640.0
+    assert sale_plan["selected_program_repayment_capacity_verified"] is False
+
+
+def test_compute_affordable_budgets_returns_all_three_transaction_types():
+    agent = JeonseAgent("rule")
+    user = dict(user_id="AFF", age=29, monthly_income_manwon=350,
+                total_asset_manwon=5640, monthly_living_cost_manwon=100,
+                income_decile=5, preferred_sido="경기",
+                preferred_gugun="수원시 팔달구")
+    budgets = agent.compute_affordable_budgets(user)
+
+    assert set(budgets) == {"전세", "매매", "월세"}
+    assert budgets["전세"]["deposit_manwon"] >= 5640
+    assert budgets["매매"]["sale_price_manwon"] >= 5640
+    assert budgets["월세"]["financing_plan"] is None
+    assert budgets["월세"]["monthly_rent_manwon"] > 0
+    assert budgets["월세"]["deposit_manwon"] > 0
+
+
 def test_compound_preferred_region_is_normalized_but_outside_prototype_scope():
     agent = JeonseAgent("rule")
     user = dict(user_id="REGION", age=22, monthly_income_manwon=100,

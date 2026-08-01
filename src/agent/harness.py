@@ -162,6 +162,61 @@ def _classify_goal_finance(programs: list[dict], affordability) -> tuple[list[di
     return direct + ancillary, plan
 
 
+def _classify_transaction_finance(
+    programs: list[dict], affordability, *, direct_terms: tuple[str, ...],
+    base_budget_manwon: float,
+) -> dict:
+    """`_classify_goal_finance`를 전세 외 거래유형에도 쓸 수 있게 일반화한 버전.
+    "가장 큰 유효 한도 대출 하나만 사용" 원칙은 동일하게 유지한다. 전세 목표
+    대화(_handle_financed_jeonse_goal)는 하위 호환을 위해 기존 함수를 그대로 쓴다."""
+    direct = []
+    for original in programs:
+        program = dict(original)
+        haystack = " ".join(str(program.get(key) or "") for key in (
+            "name", "category", "product_kind", "support_content", "desc", "target"
+        )).lower()
+        has_loan = "대출" in str(program.get("product_kind") or "") \
+            or "대출" in str(program.get("category") or "")
+        if has_loan and any(term in haystack for term in direct_terms):
+            direct.append(program)
+
+    evaluated = []
+    monthly_cap = float(affordability.max_monthly_housing_manwon)
+    for program in direct:
+        reported_limit = float(program.get("max_amount_manwon") or 0)
+        if reported_limit <= 0:
+            continue
+        rate = program.get("rate_pct")
+        if rate is not None and float(rate) > 0:
+            service_limit = monthly_cap * 12 / (float(rate) / 100)
+            effective_limit = min(reported_limit, service_limit)
+            capacity_verified = True
+        else:
+            effective_limit = reported_limit
+            capacity_verified = False
+        evaluated.append((effective_limit, program, capacity_verified))
+    evaluated.sort(key=lambda item: item[0], reverse=True)
+    selected = evaluated[0] if evaluated else None
+
+    loan_limit = selected[0] if selected else 0.0
+    return {
+        "base_budget_manwon": round(base_budget_manwon, 1),
+        "direct_loan_limit_manwon": round(loan_limit, 1),
+        "estimated_max_budget_manwon": round(base_budget_manwon + loan_limit, 1),
+        "selected_program_id": selected[1].get("program_id") if selected else None,
+        "selected_program_name": selected[1].get("name") if selected else None,
+        "selected_program_repayment_capacity_verified": (
+            selected[2] if selected else None),
+        "reviewed_program_count": len(programs),
+        "direct_finance_count": len(direct),
+        "limitation": (
+            None if selected else
+            "현재 금융 DB에서 한도가 확인되는 직접 대출 상품을 찾지 못해 "
+            "예산을 임의로 늘리지 않았습니다."
+        ),
+    }
+
+
 class JeonseAgent:
     def __init__(self, recommender_name: str = "rule"):
         self.llm = get_llm()
@@ -196,6 +251,42 @@ class JeonseAgent:
                 "pending_user_text": None, "pending_info": None,
                 "pending_trace": None, "last_intent": None,
                 "last_qa_args": {}, "stage": "idle"}
+
+    def compute_affordable_budgets(self, user: dict) -> dict:
+        """'구매가능' 토글용: 거래유형별(전세/매매/월세) 자기자금+최대 대출가능액 예산.
+
+        여러 대출 한도를 합산하지 않고 거래유형별로 가장 큰 유효 한도 하나만
+        쓰는 원칙은 _classify_goal_finance와 동일하다(_classify_transaction_finance).
+        """
+        aff = compute_affordability(user)
+        region = " ".join(
+            str(value) for value in
+            (user.get("preferred_sido"), user.get("preferred_gugun")) if value
+        ) or None
+        programs = self.finance_tool.search(
+            user_income_manwon=user.get("monthly_income_manwon"),
+            user_age=user.get("age"), region=region, finance_mode="eligibility",
+            user_profile=user, limit=50,
+        )
+        jeonse_terms = ("전세자금", "전월세자금", "임차보증금", "전세보증금대출",
+                       "버팀목", "중소기업취업청년")
+        sale_terms = ("담보대출", "주택구입자금", "주택자금대출", "부동산담보대출",
+                      "보금자리론", "디딤돌")
+        jeonse_plan = _classify_transaction_finance(
+            programs, aff, direct_terms=jeonse_terms,
+            base_budget_manwon=float(aff.recommended_jeonse_deposit_manwon))
+        sale_plan = _classify_transaction_finance(
+            programs, aff, direct_terms=sale_terms,
+            base_budget_manwon=float(user.get("total_asset_manwon") or 0))
+        return {
+            "전세": {"deposit_manwon": jeonse_plan["estimated_max_budget_manwon"],
+                    "financing_plan": jeonse_plan},
+            "매매": {"sale_price_manwon": sale_plan["estimated_max_budget_manwon"],
+                    "financing_plan": sale_plan},
+            "월세": {"monthly_rent_manwon": float(aff.max_monthly_housing_manwon),
+                    "deposit_manwon": float(aff.recommended_monthly_deposit_manwon),
+                    "financing_plan": None},
+        }
 
     # ------------------------------------------------------------------
     # 진입점: 한 턴 처리

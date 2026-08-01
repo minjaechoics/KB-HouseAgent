@@ -183,6 +183,7 @@ class PropertySearchIn(BaseModel):
     sort_by: str = "recommended"
     origin_lat: Optional[float] = None
     origin_lng: Optional[float] = None
+    affordability_only: bool = False
 
 
 class SimulationDestinationIn(BaseModel):
@@ -906,11 +907,16 @@ def search_properties(body: PropertySearchIn):
         if enabled is not None:
             enabled.add(initial_scope["id"])
     try:
+        budget_caps = (
+            _agent.compute_affordable_budgets(session["user"])
+            if body.affordability_only else None
+        )
         result = _property_search.search(
             atoms, enabled, body.limit,
             sort_by=body.sort_by,
             origin_lat=body.origin_lat,
             origin_lng=body.origin_lng,
+            budget_caps=budget_caps,
         )
         ui["last_search_properties"] = copy.deepcopy(result.get("properties") or [])
         ui["last_search_trace"] = copy.deepcopy(result.get("trace") or {})

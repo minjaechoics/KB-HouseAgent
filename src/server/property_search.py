@@ -69,6 +69,13 @@ def _distance_km(row: dict, origin: tuple[float, float]) -> float:
     return 6371.0088 * 2 * math.asin(min(1.0, math.sqrt(value)))
 
 
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    lat1, lng1, lat2, lng2 = map(math.radians, (lat1, lng1, lat2, lng2))
+    value = (math.sin((lat2 - lat1) / 2) ** 2
+             + math.cos(lat1) * math.cos(lat2) * math.sin((lng2 - lng1) / 2) ** 2)
+    return 6371.0088 * 2 * math.asin(min(1.0, math.sqrt(value)))
+
+
 def _sort_candidates(candidates: list[dict], sort_by: str,
                      origin: tuple[float, float] | None) -> list[dict]:
     if sort_by == "recommended":
@@ -253,6 +260,10 @@ def atoms_from_slots(slots: dict, source_text: str, map_tool: MapTool) -> tuple[
         values = slots["region_gugun"]
         atoms.append(make_atom(field="gugun", operator="in", value=values,
                                label=f"{_display_value(values)} 지역", source=source))
+    if slots.get("region_dong"):
+        values = slots["region_dong"]
+        atoms.append(make_atom(field="dong", operator="in", value=values,
+                               label=f"{_display_value(values)} 지역", source=source))
 
     specs = [
         ("max_deposit_manwon", "deposit_manwon", "lte", "보증금", "만원 이하"),
@@ -263,6 +274,9 @@ def atoms_from_slots(slots: dict, source_text: str, map_tool: MapTool) -> tuple[
         ("max_building_age", "building_age_years", "lte", "건물연식", "년 이하"),
         ("min_safety_score", "safety_score", "gte", "치안점수", " 이상"),
         ("min_convenience_score", "convenience_score", "gte", "편의점수", " 이상"),
+        ("max_subway_walk_min", "subway_walk_minutes", "lte", "접근성(지하철)", "분 이내"),
+        ("max_facility_walk_min", "mart_walk_minutes", "lte", "편의성(편의시설)", "분 이내"),
+        ("min_room_count", "room_count", "gte", "룸개수", "개 이상"),
     ]
     for slot, field, operator, title, suffix in specs:
         value = slots.get(slot)
@@ -270,6 +284,17 @@ def atoms_from_slots(slots: dict, source_text: str, map_tool: MapTool) -> tuple[
             atoms.append(make_atom(
                 field=field, operator=operator, value=float(value),
                 label=f"{title} {_display_value(float(value))}{suffix}", source=source))
+    if slots.get("elevator_required"):
+        atoms.append(make_atom(field="elevator_count", operator="gt", value=0,
+                               label="엘리베이터 있음", source=source))
+    if slots.get("pet_allowed_required"):
+        atoms.append(make_atom(field="pet_allowed", operator="truthy", value=True,
+                               label="반려동물 가능", source=source))
+    if slots.get("max_police_distance_min") is not None:
+        minutes = float(slots["max_police_distance_min"])
+        atoms.append(make_atom(
+            field="police_distance_minutes", operator="lte", value=minutes,
+            label=f"안전성(경찰서) 도보 {_display_value(minutes)}분 이내", source=source))
 
     # Additional broker-schema conditions handled deterministically even when the
     # general planner schema does not expose them yet.
@@ -401,9 +426,14 @@ def _diverse_map_results(candidates: list[dict], limit: int) -> list[dict]:
 
 
 class AtomicPropertySearch:
-    def __init__(self, db_path: Path = config.DB_PATH, map_tool: MapTool | None = None):
+    def __init__(self, db_path: Path = config.DB_PATH, map_tool: MapTool | None = None,
+                 safety_tool: "SafetyTool | None" = None):
         self.db_path = db_path
         self.map_tool = map_tool or MapTool()
+        if safety_tool is None:
+            from src.tools.safety_tool import SafetyTool
+            safety_tool = SafetyTool()
+        self.safety_tool = safety_tool
         self.scheduler = PortfolioScheduler(
             deadline_ms=max(
                 10, int(getattr(config, "AGENT_SCHEDULER_DEADLINE_MS", 60))
@@ -434,7 +464,8 @@ class AtomicPropertySearch:
     def search(self, atoms: list[dict], enabled_ids: set[str] | None = None,
                limit: int = 120, sort_by: str = "recommended",
                origin_lat: float | None = None,
-               origin_lng: float | None = None) -> dict:
+               origin_lng: float | None = None,
+               budget_caps: dict[str, dict[str, float]] | None = None) -> dict:
         enabled = [atom for atom in atoms
                    if atom.get("enabled", True)
                    and (atom.get("scope_role") == "initial_universe"
@@ -459,8 +490,11 @@ class AtomicPropertySearch:
         additional_atoms = [atom for atom in enabled if atom is not initial_atom]
         commute_atoms = [atom for atom in additional_atoms
                          if atom.get("field") == "commute_minutes"]
+        police_atoms = [atom for atom in additional_atoms
+                        if atom.get("field") == "police_distance_minutes"]
         additional_sql_atoms = [atom for atom in additional_atoms
-                                if atom.get("field") != "commute_minutes"]
+                                if atom.get("field") not in
+                                ("commute_minutes", "police_distance_minutes")]
         route_api_calls_used: dict[str, int] = {"transit": 0, "driving": 0}
         schedule_candidate_limit = max(
             1, config.NAVER_DIRECTIONS_EXACT_CANDIDATE_LIMIT)
@@ -504,6 +538,35 @@ class AtomicPropertySearch:
             ) or "1=1"
             base_where = f"({base_where}) AND (listing_status IS NULL OR listing_status!='expired')"
             base_params = [value for _, _, values in base_sql_atoms for value in values]
+            if budget_caps:
+                # "구매가능" 토글: 자기자금+최대 대출가능액 예산을 거래유형별로
+                # 다른 컬럼과 비교해야 하므로 단일 atom으로 표현할 수 없다
+                # (_sort_sql의 거래유형별 CASE 가격식과 동일한 패턴).
+                sale_cap = budget_caps.get("매매", {}).get("sale_price_manwon")
+                jeonse_cap = budget_caps.get("전세", {}).get("deposit_manwon")
+                rent_cap = budget_caps.get("월세", {}).get("monthly_rent_manwon")
+                rent_deposit_cap = budget_caps.get("월세", {}).get("deposit_manwon")
+                budget_clause = (
+                    "CASE transaction_type "
+                    "WHEN '매매' THEN COALESCE(sale_price_manwon, asking_price_manwon, 0) <= ? "
+                    "WHEN '전세' THEN deposit_manwon <= ? "
+                    "ELSE (monthly_rent_manwon <= ? AND deposit_manwon <= ?) END"
+                )
+                budget_params = [
+                    float(sale_cap) if sale_cap is not None else 0.0,
+                    float(jeonse_cap) if jeonse_cap is not None else 0.0,
+                    float(rent_cap) if rent_cap is not None else 0.0,
+                    float(rent_deposit_cap) if rent_deposit_cap is not None else 0.0,
+                ]
+                base_where = f"({base_where}) AND ({budget_clause})"
+                base_params = [*base_params, *budget_params]
+                # base_where는 intersection 계산(초기/원자별 스코프 쿼리)에만 쓰이고
+                # commute/police atom이 없을 때의 최종 SELECT는 sql_atoms만 읽으므로,
+                # 예산 조건도 sql_atoms에 별도로 넣어야 최종 결과에 실제로 반영된다.
+                sql_atoms.append((
+                    {"field": "_budget_cap", "id": "_budget_cap"},
+                    budget_clause, budget_params,
+                ))
 
             intersection: set[str] | None = None
             if initial_atom:
@@ -695,6 +758,57 @@ class AtomicPropertySearch:
                     "estimated": not live_route or fallback_count > 0,
                 })
 
+            if police_atoms:
+                # 경찰서는 목적지가 하나가 아니라 여러 곳 중 최소거리를 구하는
+                # 문제라 commute_minutes와 반대 방향이다. 실시간 도보 경로 API가
+                # 없으므로 하버사인 거리 기반 추정치만 계산한다(네트워크 호출 없음).
+                station_df = self.safety_tool._load("police")
+                station_coords: list[tuple[float, float]] = []
+                if station_df is not None and {"lat", "lng"} <= set(station_df.columns):
+                    station_coords = [
+                        (float(lat), float(lng)) for lat, lng in zip(
+                            station_df["lat"].tolist(), station_df["lng"].tolist())
+                    ]
+                candidate_rows = connection.execute(
+                    f"SELECT property_id, lat, lng FROM properties WHERE ({base_where})",
+                    base_params,
+                ).fetchall()
+                if intersection is not None:
+                    candidate_rows = [row for row in candidate_rows
+                                      if row["property_id"] in intersection]
+                walk_speed_kmh, road_factor = 4.5, 1.25
+
+                for atom in police_atoms:
+                    max_minutes = float(atom["value"])
+                    police_ids: set[str] = set()
+                    for row in candidate_rows:
+                        if not station_coords:
+                            break
+                        lat1, lng1 = float(row["lat"]), float(row["lng"])
+                        nearest_km = min(
+                            _haversine_km(lat1, lng1, slat, slng)
+                            for slat, slng in station_coords
+                        )
+                        minutes = nearest_km / walk_speed_kmh * 60.0 * road_factor
+                        if minutes <= max_minutes:
+                            police_ids.add(row["property_id"])
+                    intersection = (police_ids if intersection is None
+                                    else intersection & police_ids)
+                    traces.append({
+                        "atom_id": atom["id"], "label": atom["label"],
+                        "scope_role": "llm_refinement",
+                        "universal_set": "initial_scope_intersection",
+                        "universal_set_count": initial_universe_count,
+                        "strategy": "estimated_haversine_nearest_of_many_walking",
+                        "tool": "nearest_station_haversine_estimate",
+                        "station_category": "police",
+                        "station_count": len(station_coords),
+                        "candidate_count": len(candidate_rows),
+                        "standalone_match_count": len(police_ids),
+                        "intersection_count_after": len(intersection),
+                        "estimated": True,
+                    })
+
             where = " AND ".join(f"({clause})" for _, clause, _ in sql_atoms) or "1=1"
             params = [value for _, _, values in sql_atoms for value in values]
             select_sql = (
@@ -704,7 +818,7 @@ class AtomicPropertySearch:
             )
             multiplier = 20 if sort_by == "recommended" else (8 if sort_by == "distance_asc" else 3)
             fetch_limit = min(20000, max(limit * multiplier, 600))
-            if commute_atoms:
+            if commute_atoms or police_atoms:
                 candidates = []
                 selected_ids = sorted(intersection or ())[:fetch_limit]
                 for offset in range(0, len(selected_ids), 800):
@@ -810,10 +924,11 @@ class AtomicPropertySearch:
         operator = atom.get("operator")
         value = atom.get("value")
         allowed = {
-            "transaction_type", "lease_type", "house_type", "sido", "gugun",
+            "transaction_type", "lease_type", "house_type", "sido", "gugun", "dong",
             "deposit_manwon", "monthly_rent_manwon", "maintenance_fee_manwon",
             "area_m2", "building_age_years", "room_count",
-            "subway_walk_minutes", "parking_total", "elevator_count", "pet_allowed",
+            "subway_walk_minutes", "mart_walk_minutes",
+            "parking_total", "elevator_count", "pet_allowed",
         }
         if field == "sale_price_manwon":
             expression = "COALESCE(sale_price_manwon, asking_price_manwon, 0)"
