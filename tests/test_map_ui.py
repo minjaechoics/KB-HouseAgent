@@ -479,6 +479,51 @@ def test_budget_caps_filters_returned_rows_by_transaction_type():
             assert (row.get("deposit_manwon") or 0) <= caps["월세"]["deposit_manwon"]
 
 
+def test_reject_if_zero_match_blocks_conditions_with_no_backing_data():
+    """subway_walk_minutes 등은 현재 매물 데이터에 전혀 없어 조건을 걸면 항상
+    0건이 된다 — 그대로 반영하면 사용자가 조건이 적용됐다고 오해하므로,
+    active_atoms에 추가하지 않고 확인할 수 없다는 안내로 대신해야 한다."""
+    from src.server.app import _reject_if_zero_match
+
+    initial = make_initial_scope_atom(atoms_from_profile({
+        "preferred_sido": "경기", "preferred_gugun": "수원시 팔달구",
+    }))
+    ui = {"initial_scope": initial}
+    empty_atom = make_atom(
+        field="subway_walk_minutes", operator="lte", value=10.0,
+        label="접근성(지하철) 10분 이내", source="AI 대화",
+    )
+    workflow = {}
+    result = _reject_if_zero_match(
+        ui, [initial], [empty_atom], workflow, slots={}, notes=[],
+        decision={"decision": "ready_to_draft", "message": "", "_trace": {}},
+        tool_events=[], sql_trace={},
+    )
+    assert result is not None
+    assert result["status"] == "ask_clarification"
+    assert "접근성(지하철) 10분 이내" in result["message"]
+    assert "확인할 수 있는" in result["message"]
+    assert workflow["state"] == "awaiting_clarification"
+
+
+def test_reject_if_zero_match_allows_conditions_with_real_data():
+    from src.server.app import _reject_if_zero_match
+
+    initial = make_initial_scope_atom(atoms_from_profile({
+        "preferred_sido": "경기", "preferred_gugun": "수원시 팔달구",
+    }))
+    ui = {"initial_scope": initial}
+    real_atom = make_atom(field="dong", operator="in", value=["인계동"],
+                          label="인계동 지역", source="AI 대화")
+    workflow = {}
+    result = _reject_if_zero_match(
+        ui, [initial], [real_atom], workflow, slots={}, notes=[],
+        decision={"decision": "ready_to_draft", "message": "", "_trace": {}},
+        tool_events=[], sql_trace={},
+    )
+    assert result is None
+
+
 def test_gui_shows_short_category_chips_and_affordability_toggle():
     gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
         encoding="utf-8")

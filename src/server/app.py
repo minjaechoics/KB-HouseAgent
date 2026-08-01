@@ -546,6 +546,66 @@ def _confirmed_condition_decision(workflow: dict) -> dict:
     }
 
 
+def _reject_if_zero_match(ui: dict, active: list, atoms: list, workflow: dict,
+                          slots: dict, notes: list, decision: dict,
+                          tool_events: list, sql_trace: dict) -> dict | None:
+    """새로 추가하려는 조건을 실제 원자 검색으로 미리 검증한다.
+
+    현재 매물 데이터가 아예 없는 필드(예: 지하철·마트 도보시간, 반려동물)로
+    조건을 걸면 항상 0건이 되는데, 그대로 적용하면 사용자가 "조건이 반영됐다"고
+    오해하게 된다. standalone_match_count(개별 조건만으로 걸러지는 매물 수)가
+    0인 신규 atom을 짚어 어떤 조건 때문인지 안내하고, 그 조건 자체를
+    active_atoms에 추가하지 않는다.
+    """
+    try:
+        initial_scope = ui.get("initial_scope")
+        check_atoms = merge_atoms(active, atoms)
+        if initial_scope and not any(
+            a.get("id") == initial_scope.get("id") for a in check_atoms
+        ):
+            check_atoms = [initial_scope, *check_atoms]
+        check_trace = (_property_search.search(check_atoms, None, limit=1)
+                       .get("trace") or {})
+    except Exception:
+        logger.exception("condition zero-match precheck failed; applying without it")
+        return None
+    if check_trace.get("final_intersection_count") != 0:
+        return None
+    per_condition = {pc.get("atom_id"): pc for pc in check_trace.get("per_condition", [])}
+    new_ids = {atom["id"] for atom in atoms}
+    zero_labels = list(dict.fromkeys(
+        per_condition[aid]["label"] for aid in new_ids
+        if aid in per_condition and per_condition[aid].get("standalone_match_count") == 0
+    ))
+    if zero_labels:
+        message = (
+            f"현재 매물 중 {', '.join(zero_labels)} 조건에 해당하는지 확인할 수 있는 "
+            "매물이 없어 답변드리기 어렵습니다. 다른 조건으로 다시 말씀해 주세요."
+        )
+    else:
+        message = (
+            "말씀하신 조건을 모두 만족하는 매물이 현재 없어 답변드리기 어렵습니다. "
+            "조건을 조금 완화해서 다시 말씀해 주세요."
+        )
+    workflow.update({"state": "awaiting_clarification", "known_slots": slots,
+                     "proposed_slots": {}, "last_question": message})
+    ui["draft_atoms"] = []
+    return {
+        "status": "ask_clarification", "message": message,
+        "draft_atoms": [], "notes": notes,
+        "trace": {
+            "stage": "condition_rejected_zero_match",
+            "workflow_state": workflow.get("state"),
+            "property_search_executed": True,
+            "decision_record": {key: value for key, value in decision.items()
+                                if key != "_trace"},
+            "planner": decision.get("_trace") or {},
+            "tools": tool_events, "text2sql": sql_trace,
+            "zero_match_check": check_trace,
+        },
+    }
+
+
 def _finalize_condition_draft(session: dict, ui: dict, history: list,
                               source_text: str, decision: dict) -> dict:
     """승인 뒤에만 지도 도구→Text2SQL→UI atom 순서로 실행한다."""
@@ -663,6 +723,14 @@ def _finalize_condition_draft(session: dict, ui: dict, history: list,
                 "tools": tool_events, "text2sql": sql_trace,
             },
         }
+    if atoms:
+        zero_match_response = _reject_if_zero_match(
+            ui, active, atoms, workflow, slots, notes, decision, tool_events, sql_trace,
+        )
+        if zero_match_response is not None:
+            history.append({"role": "assistant", "text": zero_match_response["message"]})
+            return zero_match_response
+
     ui["draft_atoms"] = []
     ui["draft_sql_trace"] = sql_trace
     ui["active_atoms"] = merge_atoms(active, atoms)
