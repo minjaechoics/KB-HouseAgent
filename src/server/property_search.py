@@ -275,15 +275,13 @@ def atoms_from_slots(slots: dict, source_text: str, map_tool: MapTool) -> tuple[
         ("max_maintenance_manwon", "maintenance_fee_manwon", "lte", "관리비", "만원 이하"),
         ("min_area_m2", "area_m2", "gte", "전용면적", "㎡ 이상"),
         ("max_building_age", "building_age_years", "lte", "건물연식", "년 이하"),
-        ("min_safety_score", "safety_score", "gte", "치안점수", " 이상"),
-        ("min_convenience_score", "convenience_score", "gte", "편의점수", " 이상"),
         ("max_subway_walk_min", "subway_walk_minutes", "lte", "접근성(지하철)", "분 이내"),
         ("max_facility_walk_min", "mart_walk_minutes", "lte", "편의성(편의시설)", "분 이내"),
         ("min_room_count", "room_count", "gte", "룸개수", "개 이상"),
     ]
     for slot, field, operator, title, suffix in specs:
         value = slots.get(slot)
-        if value is not None and field not in {"safety_score", "convenience_score"}:
+        if value is not None:
             atoms.append(make_atom(
                 field=field, operator=operator, value=float(value),
                 label=f"{title} {_display_value(float(value))}{suffix}", source=source))
@@ -921,6 +919,19 @@ class AtomicPropertySearch:
             },
         }
 
+    # deposit/월세/매매가는 서로 다른 거래유형에서만 채워지는 값이라(전세만
+    # deposit_manwon, 월세만 monthly_rent_manwon, 매매만 sale_price_manwon이
+    # 있고 나머지 두 거래유형은 NULL) 조건 없이 그냥 <= 비교하면 NULL이라
+    # 항상 거짓이 되어 다른 거래유형 매물이 전부 걸러진다. 예: 전세+매매를
+    # 함께 선택하고 "보증금 5천만원 이하"만 걸면 매매 매물(deposit_manwon
+    # NULL)이 전부 사라진다. 그 가격 필드가 의미 있는 거래유형에만 상한을
+    # 적용하고 다른 거래유형은 이 atom으로는 제한하지 않는다.
+    _PRICE_FIELD_TRANSACTION_TYPE = {
+        "deposit_manwon": "전세",
+        "monthly_rent_manwon": "월세",
+        "sale_price_manwon": "매매",
+    }
+
     @staticmethod
     def _clause(atom: dict) -> tuple[str, list[Any]]:
         field = atom.get("field")
@@ -948,6 +959,10 @@ class AtomicPropertySearch:
             marks = ",".join("?" for _ in value)
             return f"{expression} IN ({marks})", list(value)
         if operator == "lte":
+            tx_type = AtomicPropertySearch._PRICE_FIELD_TRANSACTION_TYPE.get(field)
+            if tx_type:
+                return (f"(transaction_type != ? OR {expression} <= ?)",
+                        [tx_type, float(value)])
             return f"{expression} <= ?", [float(value)]
         if operator == "gte":
             return f"{expression} >= ?", [float(value)]

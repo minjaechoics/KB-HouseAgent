@@ -479,6 +479,51 @@ def test_budget_caps_filters_returned_rows_by_transaction_type():
             assert (row.get("deposit_manwon") or 0) <= caps["월세"]["deposit_manwon"]
 
 
+def test_deposit_cap_does_not_exclude_other_transaction_types():
+    """deposit_manwon/monthly_rent_manwon/sale_price_manwon은 해당 거래유형
+    매물에만 값이 있고 나머지 두 거래유형은 NULL이다(예: 매매 매물의
+    deposit_manwon은 NULL). 조건 없이 "<= 값"으로 비교하면 NULL은 항상
+    거짓이라, 전세+매매를 함께 선택하고 보증금 상한만 걸어도 매매 매물이
+    전부 사라진다. 그 가격 필드가 의미 있는 거래유형에만 상한이 적용돼야
+    하고 다른 거래유형은 이 조건으로 걸러지면 안 된다."""
+    initial = make_initial_scope_atom(atoms_from_profile({
+        "preferred_sido": "경기", "preferred_gugun": "수원시 팔달구",
+        "transaction_types": ["전세", "매매"], "max_deposit_manwon": 5000,
+    }))
+    search = AtomicPropertySearch(map_tool=OfflineMap())
+    result = search.search([initial], {initial["id"]}, limit=300)
+    by_tx = {}
+    for row in result["properties"]:
+        by_tx[row["transaction_type"]] = by_tx.get(row["transaction_type"], 0) + 1
+    assert by_tx.get("매매", 0) > 0, "매매 매물이 보증금 상한 때문에 전부 걸러짐"
+    assert by_tx.get("전세", 0) > 0
+    for row in result["properties"]:
+        if row["transaction_type"] == "전세":
+            assert (row.get("deposit_manwon") or 0) <= 5000
+
+
+def test_condition_dialogue_schema_does_not_expose_dead_score_slots():
+    """min_safety_score/min_convenience_score는 메인 상담 챗봇(harness.py)
+    에서는 실제로 SafetyTool/ConvenienceTool을 호출해 동작하지만, 지도의
+    AI 조건 추가 대화(atoms_from_slots)에서는 조용히 버려진다(atom이 아예
+    안 만들어짐). LLM이 두 경로에서 같은 스키마 필드를 골라도 한쪽에서만
+    동작하면 "안전점수 60점 이상"처럼 명확한 요청에도 "조건을 더 구체적으로
+    말해달라"는 엉뚱한 안내가 나간다. 이미 동작하는 max_police_distance_min/
+    max_subway_walk_min/max_facility_walk_min으로 대체됐으므로 조건 대화
+    스키마에서는 완전히 제거해야 한다."""
+    from src.agent.prompts import CONDITION_DECISION_JSON_SCHEMA
+    slot_props = CONDITION_DECISION_JSON_SCHEMA["properties"]["slots"]["properties"]
+    slot_required = CONDITION_DECISION_JSON_SCHEMA["properties"]["slots"]["required"]
+    assert "min_safety_score" not in slot_props
+    assert "min_convenience_score" not in slot_props
+    assert "min_safety_score" not in slot_required
+    assert "min_convenience_score" not in slot_required
+
+    atoms, _ = atoms_from_slots(
+        {"min_safety_score": 60, "min_convenience_score": 70}, "", OfflineMap())
+    assert atoms == []
+
+
 def test_reject_if_zero_match_blocks_conditions_with_no_backing_data():
     """subway_walk_minutes 등은 현재 매물 데이터에 전혀 없어 조건을 걸면 항상
     0건이 된다 — 그대로 반영하면 사용자가 조건이 적용됐다고 오해하므로,
