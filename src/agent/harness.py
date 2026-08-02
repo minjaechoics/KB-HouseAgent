@@ -18,6 +18,7 @@ import copy
 import json
 import math
 import re
+import sqlite3
 import joblib
 import pandas as pd
 
@@ -217,6 +218,151 @@ def _classify_transaction_finance(
     }
 
 
+_PROPERTY_RECOMMENDING_INTENTS = {
+    "recommend", "goal_financed_jeonse", "goal_best_affordable",
+    "goal_alternative_areas",
+}
+_ADVISOR_REDIRECT_MESSAGE = (
+    "이 채팅 상담은 매물을 직접 검색·추천하지 않고, 전세·월세 비교, 대출 자격, "
+    "계약 위험, 시장 전망처럼 의사결정에 필요한 질문에 답하는 조언자 역할만 "
+    "합니다. 조건에 맞는 매물은 지도 화면의 필터나 'AI 조건 추가'에서 찾아 "
+    "주세요."
+)
+
+
+_LEASE_ARCHETYPE_LABELS = {
+    "A": "자산 운용형", "B": "비용 절감 & 안정형", "C": "안전 최우선형",
+}
+_LEASE_ARCHETYPE_RECOMMENDATION = {"A": "월세", "B": "전세", "C": "반전세"}
+_LEASE_ARCHETYPE_LEAD_SENTENCES = {
+    "A": (
+        "목돈을 투자에 활용할 계획이 있으시니, 순자산 중앙값만 보면 전세가 "
+        "높게 나오더라도 계약 유연성과 보증금 회수 부담을 줄이기 위해 "
+        "월세(또는 반전세)를 권합니다."),
+    "B": (
+        "특별한 투자처가 없고 거주기간도 충분히 확보하셨으니, 정책 대출과 "
+        "전세보증보험을 활용해 월 주거비를 낮출 수 있는 전세를 권합니다."),
+    "C": (
+        "이 지역·매물은 보증금을 돌려받지 못할 위험이 낮지 않아, 보증금을 "
+        "최소화한 반전세나 보증금이 낮은 월세로 원금 안전을 우선하시길 "
+        "권합니다."),
+}
+
+
+def _lease_consult_message(archetype: str, comparison_summary: str) -> str:
+    """전세/월세 상담 결론 문장을 코드가 먼저 확정한다. LLM 합성이 실패해도
+    이 문장이 그대로 사용자에게 보이고(폴백), 합성이 성공해도 이 결론
+    문장으로 시작하도록 지시해 LLM이 순자산 숫자만 보고 결론을 뒤집는
+    것을 막는다."""
+    return f"{_LEASE_ARCHETYPE_LEAD_SENTENCES[archetype]} (참고로 {comparison_summary})"
+
+
+def _lease_consult_question(missing: list[str]) -> str:
+    """전세/월세 상담 유형(자산운용형·비용절감형·안전최우선형)을 정하는 데
+    필요한 정보가 없을 때 한 번만 묻는 결합 질문. LLM 합성 없이 그대로
+    보여준다(질문 문구 자체가 흔들리면 안 되므로)."""
+    parts = []
+    if "investment" in missing:
+        parts.append(
+            "목돈을 주식·사업 등에 투자해 대출 금리보다 높은 수익을 "
+            "기대할 수 있는 상황이신가요?")
+    if "stay" in missing:
+        parts.append("이 집에서 대략 몇 년 정도 거주하실 계획이세요?")
+    return (
+        "전세와 월세 중 어느 쪽이 유리한지 상황에 맞게 상담해 드리려면 "
+        "몇 가지가 더 필요해요. " + " ".join(parts)
+        + " 잘 모르시면 '모르겠다'고 답해 주셔도 괜찮아요."
+    )
+
+
+def _decide_lease_archetype(
+    investment_edge: str, stay_years: float | None, risk_level: str,
+) -> str:
+    """전세/월세 상담 유형을 결정하는 규칙(LLM이 아니라 코드가 결정한다).
+
+    보증금 반환 위험이 높으면 다른 조건과 무관하게 원금 보호를 우선한다(C).
+    그 다음으로 대출금리보다 유리한 투자 기회가 있으면 유동성을 우선한다(A).
+    그 외에는 거주기간이 2년 이상 확보됐을 때만 전세로 월 비용을 낮춘다(B).
+    거주기간이 짧거나 불확실하면 계약 유연성을 위해 A로 둔다.
+    """
+    if risk_level == "high":
+        return "C"
+    if investment_edge == "yes":
+        return "A"
+    if stay_years is not None and stay_years >= 2:
+        return "B"
+    return "A"
+
+
+def _normalize_gugun(text: str) -> str:
+    """'수원시 팔달구'(properties/user 표기)와 '수원팔달구'(KHUG 원자료
+    표기)처럼 같은 지역을 다르게 적은 두 관례를 맞춘다. 뒤에 글자가 더
+    있는 '시'만 지우므로 '의정부시'처럼 시 단독 지역명은 그대로 둔다."""
+    text = re.sub(r"\s+", "", str(text or ""))
+    return re.sub(r"시(?=.)", "", text)
+
+
+def _region_deposit_risk_percentile(sido: str | None, gugun: str | None) -> float | None:
+    """(sido, gugun)의 KHUG 보증사고율이 전체 시군구 중 몇 번째 백분위인지
+    반환한다. region_accident_stats는 실제 데이터로 이미 DB에 적재돼 있지만
+    지금까지 어떤 실행 경로에서도 조회되지 않던 테이블이다. 표기 관례가
+    달라 SQL로 직접 매칭하지 않고 정규화 후 파이썬에서 비교한다(행 수가
+    252건뿐이라 매번 전체를 읽어도 비용이 작다)."""
+    if not sido or not gugun:
+        return None
+    target_gugun = _normalize_gugun(gugun)
+    try:
+        uri = config.DB_PATH.resolve().as_uri() + "?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=5) as connection:
+            rows = connection.execute(
+                "SELECT gugun, accident_rate_pct FROM region_accident_stats "
+                "WHERE sido = ?", (sido,),
+            ).fetchall()
+    except sqlite3.Error:
+        return None
+    if not rows:
+        return None
+    target_rate = next(
+        (rate for gugun_name, rate in rows
+         if _normalize_gugun(gugun_name) == target_gugun), None)
+    if target_rate is None:
+        return None
+    all_rates = [rate for _, rate in rows]
+    return sum(1 for rate in all_rates if rate <= target_rate) / len(all_rates)
+
+
+def _lease_deposit_risk_level(session: dict, user: dict) -> tuple[str, dict]:
+    """보증금 미반환(깡통전세) 위험 수준을 'high'/'moderate'/'low'/'unknown'으로
+    분류한다. 다가구 전세 매물을 선택한 상태면 그 매물의 전세가율 확률분포
+    (이미 계산된 값)를 우선 쓰고, 아니면 KHUG 시군구 사고율 백분위로
+    대체한다. 근거 없이 'high'를 만들지 않는다(둘 다 없으면 unknown)."""
+    report = session.get("last_property_report") or {}
+    prop = report.get("property") or {}
+    jeonse_ratio = (report.get("contract_safety") or {}).get("jeonse_ratio") or {}
+    if (prop.get("transaction_type") == "전세"
+            and "다가구" in str(prop.get("house_type") or "")
+            and jeonse_ratio.get("available")):
+        thresholds = jeonse_ratio.get("threshold_probabilities") or {}
+        over_1_0 = float(thresholds.get("post_contract_over_1_0") or 0)
+        over_0_8 = float(thresholds.get("post_contract_over_0_8") or 0)
+        level = "high" if (over_1_0 > .05 or over_0_8 > .2) else "low"
+        return level, {
+            "source": "property_jeonse_ratio",
+            "post_contract_over_1_0": over_1_0,
+            "post_contract_over_0_8": over_0_8,
+        }
+    percentile = _region_deposit_risk_percentile(
+        user.get("preferred_sido"), user.get("preferred_gugun"))
+    if percentile is None:
+        return "unknown", {"source": "unavailable"}
+    level = "high" if percentile >= .75 else "moderate" if percentile >= .4 else "low"
+    return level, {
+        "source": "region_accident_stats",
+        "sido": user.get("preferred_sido"), "gugun": user.get("preferred_gugun"),
+        "accident_rate_percentile": round(percentile, 4),
+    }
+
+
 class JeonseAgent:
     def __init__(self, recommender_name: str = "rule"):
         self.llm = get_llm()
@@ -252,7 +398,10 @@ class JeonseAgent:
         return {"user": user, "pending_slots": None, "pending_tool_calls": None,
                 "pending_user_text": None, "pending_info": None,
                 "pending_trace": None, "last_intent": None,
-                "last_qa_args": {}, "stage": "idle"}
+                "last_qa_args": {}, "stage": "idle",
+                "lease_consult": {"investment_edge": None,
+                                   "planned_stay_years": None,
+                                   "asked_once": False}}
 
     def compute_affordable_budgets(self, user: dict) -> dict:
         """'구매가능' 토글용: 거래유형별(전세/매매/월세) 자기자금+최대 대출가능액 예산.
@@ -295,10 +444,15 @@ class JeonseAgent:
     # ------------------------------------------------------------------
     def handle(self, session: dict, text: str,
                *, direct_recommend: bool = False,
-               conversation_history: list[dict] | None = None) -> dict:
+               conversation_history: list[dict] | None = None,
+               consult_only: bool = False) -> dict:
         """
         사용자 발화 한 턴 처리 → 응답 dict.
         응답 status: clarify | confirm | recommendation | qa | cancelled | error
+
+        consult_only=True(상담 채널)면 매물을 직접 검색·추천하는 의도
+        (recommend/goal_*)는 실행하지 않고 지도 검색으로 안내한다. 상담
+        채널은 의사결정에 필요한 질문(qa_*)에만 답하는 조언자 역할이다.
         """
         # 지도 조건 추가는 별도 버튼 흐름에서 승인한다. 상담 채널의 직접 추천은
         # 이전 CLI식 "응" 확인 상태를 이어받지 않는다.
@@ -330,7 +484,7 @@ class JeonseAgent:
             merged = dict(session.get("pending_slots") or {})
             merged.update(plan.slots)
             plan.slots = merged
-            return self._route(session, plan, text)
+            return self._route(session, plan, text, consult_only=consult_only)
 
         # 신규 발화
         planning_text = text
@@ -397,11 +551,13 @@ class JeonseAgent:
             plan.metadata = dict(plan.metadata or {})
             plan.metadata["advisor_history_turns_used"] = len(advisor_history)
         return self._route(
-            session, plan, text, conversation_history=advisor_history)
+            session, plan, text, conversation_history=advisor_history,
+            consult_only=consult_only)
 
     # ------------------------------------------------------------------
     def _route(self, session, plan: Plan, text: str,
-               conversation_history: list[dict] | None = None) -> dict:
+               conversation_history: list[dict] | None = None,
+               consult_only: bool = False) -> dict:
         trace = {"input": text, "planner": {
                     "intent": plan.intent,
                     "action": plan.action,
@@ -415,6 +571,12 @@ class JeonseAgent:
         if conversation_history:
             # 최종 합성 단계까지만 전달하고 API trace에는 원문 대화를 노출하지 않는다.
             trace["_advisor_conversation_history"] = conversation_history
+        if consult_only and plan.intent in _PROPERTY_RECOMMENDING_INTENTS:
+            session["stage"] = "idle"
+            return self._finalize(text, {
+                "status": "qa", "qa_type": "advisor_redirect",
+                "message": _ADVISOR_REDIRECT_MESSAGE,
+            }, trace, synthesize=False)
         # 금융→예산→매물의 다단계 목표 처리
         if plan.intent == "goal_financed_jeonse":
             session["last_intent"] = plan.intent
@@ -961,11 +1123,74 @@ class JeonseAgent:
                     "property": report.get("property") if contract else None}, trace)
 
         if intent == "qa_lease_compare":
-            comparison = self._lease_monte_carlo_comparison(session, trace)
+            consult = session.setdefault("lease_consult", {
+                "investment_edge": None, "planned_stay_years": None,
+                "asked_once": False,
+            })
+            if args.get("investment_edge") in ("yes", "no"):
+                consult["investment_edge"] = args["investment_edge"]
+            if args.get("planned_stay_years") is not None:
+                try:
+                    consult["planned_stay_years"] = max(
+                        0.5, min(float(args["planned_stay_years"]), 30))
+                except (TypeError, ValueError):
+                    pass
+
+            preference = normalize_preferences(user.get("preferences"))
+            investment_edge = consult["investment_edge"]
+            investment_edge_is_default = False
+            if investment_edge is None and preference.get("mode") in ("growth", "stable"):
+                investment_edge = "yes" if preference["mode"] == "growth" else "no"
+                investment_edge_is_default = True
+            risk_level, risk_evidence = _lease_deposit_risk_level(session, user)
+
+            # 위험이 높으면 무엇을 답하든 결론이 C로 고정되고, 투자 기회가
+            # 있으면 거주기간과 무관하게 A로 고정된다 — 이런 경우까지 굳이
+            # 되묻지 않는다. 거주기간은 "투자 기회 없음(또는 미확인) + 위험
+            # 낮음"일 때만 B/A를 가르는 데 실제로 필요하다.
+            missing = []
+            if risk_level != "high":
+                if investment_edge is None:
+                    missing.append("investment")
+                if investment_edge != "yes" and consult["planned_stay_years"] is None:
+                    missing.append("stay")
+
+            if missing and not consult["asked_once"]:
+                consult["asked_once"] = True
+                return self._finalize(text, {
+                    "status": "qa", "qa_type": "lease_compare",
+                    "needs_clarification": True,
+                    "message": _lease_consult_question(missing),
+                }, trace, synthesize=False)
+
+            if investment_edge is None:
+                investment_edge = "no"
+            archetype = _decide_lease_archetype(
+                investment_edge, consult["planned_stay_years"], risk_level)
+            comparison = self._lease_monte_carlo_comparison(
+                session, trace, stay_years=consult["planned_stay_years"])
+            trace["tools"].append({
+                "tool": "lease_consulting_archetype",
+                "archetype": archetype,
+                "investment_edge": investment_edge,
+                "investment_edge_is_default": investment_edge_is_default,
+                "planned_stay_years": consult["planned_stay_years"],
+                "risk_level": risk_level,
+            })
             return self._finalize(text, {
                 "status": "qa", "qa_type": "lease_compare",
-                "message": comparison["summary"],
+                "message": _lease_consult_message(archetype, comparison["summary"]),
                 "lease_monte_carlo": comparison,
+                "lease_consult": {
+                    "archetype": archetype,
+                    "archetype_label": _LEASE_ARCHETYPE_LABELS[archetype],
+                    "recommended_transaction": _LEASE_ARCHETYPE_RECOMMENDATION[archetype],
+                    "investment_edge": investment_edge,
+                    "investment_edge_is_default": investment_edge_is_default,
+                    "planned_stay_years": consult["planned_stay_years"],
+                    "risk_level": risk_level,
+                    "risk_evidence": risk_evidence,
+                },
             }, trace)
 
         if intent == "qa_cost":
@@ -1282,9 +1507,10 @@ class JeonseAgent:
         }, trace)
 
     def _lease_monte_carlo_comparison(
-        self, session: dict, trace: dict,
+        self, session: dict, trace: dict, stay_years: float | None = None,
     ) -> dict:
         user = session["user"]
+        horizon_years = max(1, min(round(stay_years), 30)) if stay_years else 10
         affordability = compute_affordability(user)
         region = " ".join(str(value) for value in (
             user.get("preferred_sido"), user.get("preferred_gugun")) if value)
@@ -1323,9 +1549,9 @@ class JeonseAgent:
         seed = 20260729
         for transaction, prop in representative.items():
             budget = simulate_asset_budget(
-                user, prop, forecast, programs, {"horizon_years": 10})
+                user, prop, forecast, programs, {"horizon_years": horizon_years})
             probabilistic = simulate_probabilistic(
-                user, prop, forecast, budget, {"horizon_years": 10},
+                user, prop, forecast, budget, {"horizon_years": horizon_years},
                 paths=3000, seed=seed,
             )
             base = probabilistic["base"]
@@ -1370,12 +1596,12 @@ class JeonseAgent:
             "preferred": winner,
             "p50_gap_manwon": round(gap, 1),
             "summary": (
-                f"현재 입력과 10년·각 3,000개 경로 기준 중앙값은 {winner}가 "
-                f"약 {gap:,.0f}만원 우세합니다."
+                f"현재 입력과 {horizon_years}년·각 3,000개 경로 기준 중앙값은 "
+                f"{winner}가 약 {gap:,.0f}만원 우세합니다."
             ),
             "scenarios": scenarios,
             "path_count_per_option": 3000,
-            "horizon_years": 10,
+            "horizon_years": horizon_years,
             "basis": (
                 "선택 매물과 적정예산 대표 시나리오 비교"
                 if selected_transaction in representative

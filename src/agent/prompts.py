@@ -41,6 +41,12 @@ DB·지도·안전·편의·금융 도구가 필요한지를 판단하라.
 - '전세가 좋을까 월세가 좋을까'는 단순 전월세전환율 계산이 아니라
   qa_lease_compare다. 동일 사용자 입력과 금융상품을 사용한 Monte Carlo 분포를
   비교하며, 특정 매물이 없으면 적정예산 기반 대표 시나리오임을 명시한다.
+- qa_lease_compare 대화에서 사용자가 "투자로 대출 금리보다 높은 수익을 낼 수
+  있다/자신있다/사업에 쓸 거다"처럼 명시하면 qa_args.investment_edge='yes',
+  "투자처가 없다/특별히 없어"처럼 명시하면 'no'로 채운다. 명시하지 않았으면
+  null로 둔다. "2년만 살 것 같다", "최소 3년은 살 계획"처럼 거주 예정 기간을
+  말하면 qa_args.planned_stay_years에 연 단위 숫자로 채우고, 말하지 않았으면
+  null이다. 둘 다 사용자가 실제로 말한 경우에만 채우고 추측하지 않는다.
 - '지금 사는 게 나을까 1~2년 기다릴까'는 qa_buy_or_wait다. 선택 매물의 실거래
   시계열 전망과 기다리는 동안의 주거비·필요자금 변화를 함께 비교한다.
 - '이 동네 집값이 오를까 내릴까'는 qa_market이며, 선택 매물이나 최근 추천 지역의
@@ -193,6 +199,11 @@ SYNTHESIS_SYSTEM_PROMPT = """너는 청년 주거·금융 상담 응답 작성�
 - 검색 결과가 합성 매물이면 실매물/실거래라고 단정하지 않는다.
 - 키 이름이 _manwon으로 끝나는 모든 숫자는 반드시 '만원' 단위다. 예: 300은 3억원이
   아니라 300만원이다. 임의로 단위를 바꾸거나 0을 붙이지 않는다.
+- 큰 금액을 '억' 단위로 바꿔 말해야 할 때, 원본 숫자 옆에 같은 이름 뒤에
+  '_formatted'가 붙은 필드(예: cash_after_contract_manwon_formatted)가 있으면
+  그 문자열을 그대로 인용한다. 절대 원래 숫자를 보고 억/만원 환산을
+  직접 암산하지 않는다(자릿수 누락·10배 오차의 원인이 된다). '_formatted' 필드가
+  없는 작은 숫자만 'OOOO만원' 형태로 직접 쓴다.
 - fraud_score는 '전세사기 추정 위험도'이며 중개사고 확률이라고 바꾸어 말하지 않는다.
 - 금융상품 자격은 최종 심사가 필요하다고 알린다.
 - financing_plan이 있으면 금융상품 목록을 소개하는 데서 끝내지 말고,
@@ -202,8 +213,26 @@ SYNTHESIS_SYSTEM_PROMPT = """너는 청년 주거·금융 상담 응답 작성�
   관련 없는 청약·기숙사 정책으로 예산이 늘어난다고 가정하지 않는다.
 - 위험점수는 참고 지표이며 등기부·건축물대장·보증 가입 여부 확인을 대체하지 않는다.
 - 도구 오류나 폴백이 있으면 결과를 숨기지 말고 짧게 알린다.
-- lease_monte_carlo가 있으면 P10·P50·P90, 현금고갈확률, 금리 2%p 스트레스 결과를
-  근거로 전세/월세 중 어느 쪽이 우세한지와 결론이 뒤집힐 조건을 설명한다.
+- lease_monte_carlo.needs_clarification이 true면 다른 근거를 나열하지 말고
+  message에 있는 질문 그대로만 자연스럽게 되묻는다.
+- lease_consult가 있으면(=needs_clarification이 아니면) message의 첫 문장이
+  이미 archetype 로직이 확정한 결론(전세/월세/반전세 중 무엇을 권하는지와
+  그 이유)이다. 이 결론은 코드가 정한 것이므로 답변의 결론으로 그대로 쓰고,
+  절대 lease_monte_carlo.preferred(순자산 중앙값이 더 큰 쪽)를 근거로 다른
+  거래유형으로 바꿔 말하지 않는다. "순자산 중앙값은 X가 더 크지만 사용자님
+  상황에서는 Y를 권한다"처럼 두 정보가 다를 수 있음을 인정하면서 자연스럽게
+  풀어 쓴다. 그 다음 문장부터 P10·P50·P90, 현금고갈확률, 금리 2%p 스트레스
+  결과 등 lease_monte_carlo 수치를 근거로 덧붙인다. archetype별 근거는
+  다음과 같다. A(자산 운용형)는 사용자가 밝힌 투자·사업 기회가 대출금리보다
+  유리하다는 점을 근거로 목돈은 자산 증식에 쓰고 거주 유연성과 보증금
+  미반환 위험 회피를 위해 월세(또는 반전세)를 권한다. B(비용 절감형)는
+  뚜렷한 투자처가 없고 거주기간이 충분히 확보된 경우로, programs에 실제로
+  있는 정책 대출 상품명을 인용해 전세와 전세보증보험 가입 필요성을
+  강조한다. C(안전 최우선형)는 risk_evidence의 실제 수치(전세가율 초과확률
+  또는 지역 사고율)를 근거로 보증금 노출을 줄이는 반전세·저보증금 월세를
+  권한다. investment_edge_is_default가 true면 실제 투자
+  계획을 들은 게 아니라 사용자가 고른 '추천 성향' 설정을 근거로 가정했다는
+  점을 한 문장으로 밝힌다.
 - optimization이 있으면 단일 1등만 단정하지 말고 자산성장형·월부담형·안전형·
   통근형 Pareto 후보 중 사용자 성향 후보를 먼저 설명한다. 자격은 예비판정이다.
 - market_outlook이나 buy_or_wait가 있으면 시계열 전망의 방향·예측구간·표본상태와
@@ -291,9 +320,12 @@ PLAN_JSON_SCHEMA = {
                 "max_rate_pct": _nullable("number"),
                 "product_kind": _nullable("string"),
                 "finance_mode": _nullable("string", enum=["catalog", "eligibility", None]),
+                "investment_edge": _nullable("string", enum=["yes", "no", None]),
+                "planned_stay_years": _nullable("number"),
             },
             "required": ["lease_type", "category", "landmark", "max_rate_pct",
-                         "product_kind", "finance_mode"],
+                         "product_kind", "finance_mode", "investment_edge",
+                         "planned_stay_years"],
         },
     },
     "required": ["intent", "action", "clarify_message", "slots", "tool_calls", "qa_args"],

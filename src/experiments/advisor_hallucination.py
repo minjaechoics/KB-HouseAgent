@@ -47,6 +47,20 @@ DEFAULT_USER = {
     "preferred_sido": "경기",
     "preferred_gugun": "수원시 팔달구",
     "preferences": {"mode": "balanced", "approved": True},
+    # qa_finance 케이스(신용등급/차량/개인사업자 자격 확인)를 실제로
+    # 검증하기 위한 프로필. 기존 카테고리는 이 필드들을 쓰지 않으므로
+    # 추가해도 기존 점수에 영향을 주지 않는다.
+    "employment_type": "employee",
+    "employment_months": 36,
+    "household_role": "head",
+    "home_ownership_count": 0,
+    "marital_status": "single",
+    "is_korean_national": True,
+    "has_income_proof": True,
+    "contract_deposit_paid_5pct": True,
+    "credit_grade": 3,
+    "vehicle_purchase_type": "used_purchase",
+    "vehicle_price_manwon": 8000,
 }
 
 SELECTED_REPORT = {
@@ -219,6 +233,14 @@ def _collect_numbers(value: Any, output: list[float]) -> None:
     if isinstance(value, (int, float)) and math.isfinite(float(value)):
         output.append(float(value))
         return
+    if isinstance(value, str):
+        # eligibility_text/loan_limit_text 같은 원문 필드에 "수도권 7억원
+        # 이하", "납입액의 95% 이내"처럼 근거 있는 수치가 텍스트로만 박혀
+        # 있는 경우가 많다. 억/만원 결합 표기까지 함께 파싱해 이런 값도
+        # "알려진 근거"로 인정한다(그렇지 않으면 원문을 그대로 인용한
+        # 정확한 답변이 오탐으로 실패 처리된다).
+        output.extend(_extract_amounts(value))
+        return
     if isinstance(value, dict):
         output.append(float(len(value)))
         for item in value.values():
@@ -228,6 +250,68 @@ def _collect_numbers(value: Any, output: list[float]) -> None:
         output.append(float(len(value)))
         for item in value:
             _collect_numbers(item, output)
+
+
+def _extract_amounts(text: str) -> list[float]:
+    """만원 단위로 결합한 숫자와 개별 토큰을 함께 반환한다.
+
+    한국어는 큰 금액을 "3억 2,727만원"처럼 억/만 단위로 쪼개 쓴다. 단순
+    자릿수 토큰 정규식은 이를 "3"과 "2727"로 따로 뽑아 실제 값(32727)과
+    둘 다 불일치 판정하는 오탐을 만든다("3.5억원"→35000만원도 동일). 억
+    표기를 만원 단위로 결합한 값을 우선 추가하고, 그 외 개별 토큰도 남겨
+    다른 단위(나이·개월·퍼센트 등)의 정당한 숫자를 놓치지 않는다.
+    """
+    # URL의 쿼리스트링·프로그램ID에 박힌 숫자(예: LN20000030, page=C103429)는
+    # 사실 주장이 아니므로 추출 전에 링크 전체를 제거한다.
+    text = re.sub(r"https?://\S+", " ", text)
+    # "24시간"은 편의점 카테고리를 가리키는 고정 관용구지 근거 대조가
+    # 필요한 수치 주장이 아니므로 제거한다.
+    text = re.sub(r"24\s*시간", " ", text)
+    # "2026년"처럼 연도로 쓰인 4자리 숫자는 사실 주장이 아니라 날짜
+    # 표기이므로 제거한다(가격 등 만원 단위 수치와 우연히 자릿수가 겹칠 수 있음).
+    text = re.sub(r"\d{4}\s*년", " ", text)
+
+    combined: list[float] = []
+    consumed: list[tuple[int, int]] = []
+    # "3억 2,727만 3,000원"처럼 억+만 뒤에 나머지 원 단위까지 붙는 3단 표기도
+    # 하나의 값으로 결합한다(코드가 미리 계산해 붙이는 _formatted 문자열이
+    # 이 3단 형태를 쓴다). 마지막 "원" 그룹이 없으면 기존 억+만 표기와 동일하다.
+    for match in re.finditer(
+        r"(\d[\d,]*(?:\.\d+)?)\s*억\s*(?:(\d[\d,]*(?:\.\d+)?)\s*(천)?\s*만"
+        r"(?:\s*(\d[\d,]*(?:\.\d+)?)\s*원)?)?",
+        text,
+    ):
+        eok = float(match.group(1).replace(",", ""))
+        man_raw = float(match.group(2).replace(",", "")) if match.group(2) else 0.0
+        man = man_raw * 1000 if match.group(3) else man_raw  # "5천만" = 5*1000만
+        won = float(match.group(4).replace(",", "")) if match.group(4) else 0.0
+        combined.append(eok * 10000 + man + won / 10000.0)
+        consumed.append(match.span())
+    # "억" 없이 단독으로 쓰는 "3천만원"(=3*1000만원) 표기도 결합한다.
+    for match in re.finditer(r"(\d[\d,]*(?:\.\d+)?)\s*천\s*만", text):
+        if any(start <= match.start() < end for start, end in consumed):
+            continue
+        combined.append(float(match.group(1).replace(",", "")) * 1000)
+        consumed.append(match.span())
+    # "81만2,000원"처럼 만원 단위 뒤 나머지를 원 단위로 이어 쓰는 표기를
+    # 만원 기준값(81 + 2000/10000 = 81.2)으로 결합한다.
+    for match in re.finditer(
+        r"(\d[\d,]*(?:\.\d+)?)\s*만\s*(\d[\d,]*(?:\.\d+)?)\s*원", text
+    ):
+        if any(start <= match.start() < end for start, end in consumed):
+            continue
+        man = float(match.group(1).replace(",", ""))
+        won = float(match.group(2).replace(",", ""))
+        combined.append(man + won / 10000.0)
+        consumed.append(match.span())
+    # 억/천만/만원 표기에 이미 포함된 구간의 개별 숫자 토큰(예: "2억8,800만"의
+    # "2","8800")은 결합값(28800)과 별개의 독립 주장으로 다시 세면 안 되므로 제외한다.
+    tokens: list[float] = []
+    for token_match in re.finditer(r"\d[\d,]*(?:\.\d+)?", text):
+        if any(start <= token_match.start() < end for start, end in consumed):
+            continue
+        tokens.append(float(token_match.group(0).replace(",", "")))
+    return combined + tokens
 
 
 def _answer_numeric_grounding(case: AdvisorCase, result: dict[str, Any],
@@ -245,18 +329,20 @@ def _answer_numeric_grounding(case: AdvisorCase, result: dict[str, Any],
                 if key not in {"answer", "message"}}
     numbers: list[float] = []
     _collect_numbers(evidence, numbers)
-    for token in re.findall(r"\d[\d,]*(?:\.\d+)?", case.query):
-        numbers.append(float(token.replace(",", "")))
+    numbers.extend(_extract_amounts(case.query))
     variants = list(numbers)
     variants.extend(number * 100 for number in numbers if abs(number) <= 1)
-    claimed = [float(token.replace(",", "")) for token in re.findall(
-        r"\d[\d,]*(?:\.\d+)?", answer)]
+    claimed = _extract_amounts(answer)
     unsupported = []
     for claim in claimed:
-        if not any(math.isclose(claim, value, rel_tol=0.005, abs_tol=0.11)
+        # abs_tol=0.5: 자연어는 12.6분을 "약 13분"처럼 정수로 반올림해
+        # 말하는 게 정상이다(오차 0.5 이내). 자릿수를 통째로 빠뜨리거나
+        # 10배 단위를 잘못 읽는 실제 오류는 이 허용오차보다 훨씬 크므로
+        # 여전히 잡아낸다.
+        if not any(math.isclose(claim, value, rel_tol=0.005, abs_tol=0.5)
                    for value in variants):
             unsupported.append(claim)
-    synthesis_ok = case.category == "condition_dialogue" or (not live) or (
+    synthesis_ok = case.category in {"condition_dialogue", "condition_new_atoms"} or (not live) or (
         synthesis.get("strategy") == "llm_grounded" and synthesis.get("ok") is True
     )
     return {
@@ -317,7 +403,7 @@ def score_advisor_result(case: AdvisorCase, result: dict[str, Any],
         checks["recommendation_mode_exact"] = (
             result.get("recommendation_mode") == case.expected_mode)
 
-    if case.category == "condition_dialogue":
+    if case.category in {"condition_dialogue", "condition_new_atoms"}:
         slot_ok, slot_errors = _slot_check(
             case.expected_slots or {}, planner.get("slots") or {})
         checks.update({
@@ -368,10 +454,13 @@ def score_advisor_result(case: AdvisorCase, result: dict[str, Any],
                    for key, value in scenarios.items()}
             expected_preferred = max(p50, key=p50.get)
             expected_gap = abs(p50["전세"] - p50["월세"])
+        horizon = comparison.get("horizon_years")
         checks.update({
             "monte_carlo_contract": (
                 comparison.get("path_count_per_option") == 3000
-                and comparison.get("horizon_years") == 10),
+                # horizon_years는 이제 사용자가 밝힌 거주 예정 기간을 반영해
+                # 동적으로 정해진다(과거처럼 항상 10년 고정이 아님).
+                and isinstance(horizon, (int, float)) and 1 <= horizon <= 30),
             "quantile_order_valid": quantiles_ok,
             "preferred_matches_p50": comparison.get("preferred") == expected_preferred,
             "reported_gap_matches_p50": (
@@ -422,6 +511,26 @@ def score_advisor_result(case: AdvisorCase, result: dict[str, Any],
             "buy_wait_conclusion_consistent": (
                 analysis.get("recommendation") == expected_recommendation),
         })
+
+    elif case.category == "qa_affordability":
+        from src.preference.affordability import compute_affordability
+        oracle = compute_affordability(DEFAULT_USER).model_dump()
+        actual = result.get("affordability") or {}
+        numeric_fields = (
+            "max_monthly_housing_manwon", "recommended_jeonse_deposit_manwon",
+            "recommended_monthly_deposit_manwon", "recommended_monthly_rent_manwon",
+            "rir_at_recommended",
+        )
+        affordability_matches_oracle = bool(actual)
+        for field in numeric_fields:
+            try:
+                affordability_matches_oracle = affordability_matches_oracle and math.isclose(
+                    float(actual.get(field)), float(oracle.get(field)),
+                    rel_tol=0.005, abs_tol=0.11)
+            except (TypeError, ValueError):
+                affordability_matches_oracle = False
+        checks["affordability_matches_deterministic_oracle"] = affordability_matches_oracle
+        details["affordability_oracle"] = oracle
 
     answer_grounding = _answer_numeric_grounding(case, result, live)
     conclusion_grounding = _answer_conclusion_grounding(case, result, live)
@@ -490,7 +599,7 @@ def _run_one(agent: JeonseAgent, llm: Any, case: AdvisorCase, truth: dict[str, A
              live: bool, batch_started: float, mode: str) -> dict[str, Any]:
     started = time.perf_counter()
     try:
-        if case.category == "condition_dialogue":
+        if case.category in {"condition_dialogue", "condition_new_atoms"}:
             result = _run_condition_dialogue(llm, case)
         else:
             history = _history_for(case) or None

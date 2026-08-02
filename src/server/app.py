@@ -1446,7 +1446,7 @@ def advisor_chat(body: ChatIn):
     try:
         history = session.setdefault("advisor_chat", [])
         result = _agent.handle(
-            session, body.text, direct_recommend=True,
+            session, body.text, direct_recommend=True, consult_only=True,
             conversation_history=copy.deepcopy(history))
         result = _enrich_advisor_recommendations(session, result)
         result["advisor_channel"] = True

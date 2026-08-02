@@ -301,4 +301,7 @@ def test_facility_counts_show_the_backend_radius_in_every_tile():
         encoding="utf-8")
     assert "data?.radius_m" in gui
     assert 'class="radius-badge"' in gui
-    assert 'class="facility-radius">${radiusText}' in gui
+    # police/fire_station(희소 시설)은 반경 집계 대신 최근접 도보시간을 앞세우지만
+    # 반경 문구는 보조 설명으로 여전히 모든 타일에 나온다(둘 다 radius 기반).
+    assert 'class="facility-radius">${isNearestType?`반경 ${radius' in gui
+    assert ':radiusText}' in gui

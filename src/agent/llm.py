@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import threading
@@ -513,6 +514,7 @@ class APILLM(BaseLLM):
         # 추적 전체나 대량 원시 행은 토큰/민감정보를 줄이기 위해 제외한다.
         grounded = {k: v for k, v in result.items()
                     if k not in {"agent_trace", "answer"}}
+        grounded = _annotate_manwon_strings(grounded)
         payload = json.dumps(grounded, ensure_ascii=False, default=str)
         if len(payload) > 14000:
             payload = payload[:14000] + "...(일부 생략)"
@@ -533,6 +535,58 @@ class APILLM(BaseLLM):
             )
         except Exception:
             return None
+
+
+def _format_manwon(value: float) -> str:
+    """만원 단위 숫자를 '3억 2,727만원'류 자연어 표기로 변환한다.
+
+    LLM이 억/만원 환산을 직접 문장으로 쓰다 보면 10배 축소나 자릿수 누락이
+    반복적으로 발생한다(예: 136923 -> "1억 3,692만원"). 계산 자체를 코드가
+    맡고 LLM은 결과 문자열을 그대로 인용하게 해 이 오류를 원천 차단한다.
+    """
+    if value < 0:
+        return "-" + _format_manwon(-value)
+    eok, remainder = divmod(value, 10000)
+    eok = int(eok)
+    man = int(remainder)
+    won = round((remainder - man) * 10000)
+    if won >= 10000:
+        man += 1
+        won -= 10000
+    segments = []
+    if eok:
+        segments.append(f"{eok}억")
+    if won:
+        segments.append(f"{man:,}만 {won:,}원")
+    elif man or not segments:
+        segments.append(f"{man:,}만원")
+    return " ".join(segments)
+
+
+def _annotate_manwon_strings(value: Any) -> Any:
+    """결과 JSON의 큰 숫자 옆에 '<필드명>_formatted' 사전 계산 문자열을 붙인다.
+
+    금액 필드 이름(...manwon)이거나 값 자체가 커서(>=1000) 만원 단위
+    금액으로 추정되는 숫자만 대상으로 한다(통근분·나이·점수 등 다른 수치는
+    이 도메인에서 1000을 넘지 않으므로 오탐 위험이 낮다).
+    """
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, sub_value in value.items():
+            out[key] = _annotate_manwon_strings(sub_value)
+            is_number = (isinstance(sub_value, (int, float))
+                         and not isinstance(sub_value, bool)
+                         and math.isfinite(float(sub_value)))
+            if is_number:
+                looks_like_manwon = (
+                    isinstance(key, str) and key.lower().endswith("manwon")
+                ) or abs(float(sub_value)) >= 1000
+                if looks_like_manwon:
+                    out[f"{key}_formatted"] = _format_manwon(float(sub_value))
+        return out
+    if isinstance(value, list):
+        return [_annotate_manwon_strings(item) for item in value]
+    return value
 
 
 def _extract_json(raw: str) -> dict:

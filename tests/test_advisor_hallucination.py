@@ -33,9 +33,9 @@ class _OneShotDelegate(BaseLLM):
         }
 
 
-def test_advisor_benchmark_has_50_unique_queries_and_required_distribution():
-    assert len(ADVISOR_CASES) == 50
-    assert len({case.query for case in ADVISOR_CASES}) == 50
+def test_advisor_benchmark_has_100_unique_queries_and_required_distribution():
+    assert len(ADVISOR_CASES) == 100
+    assert len({case.query for case in ADVISOR_CASES}) == 100
     assert category_counts() == {
         "condition_dialogue": 15,
         "best_affordable": 10,
@@ -43,9 +43,14 @@ def test_advisor_benchmark_has_50_unique_queries_and_required_distribution():
         "market_outlook": 7,
         "buy_or_wait": 5,
         "alternative_areas": 5,
+        "condition_new_atoms": 16,
+        "qa_finance": 12,
+        "qa_safety": 8,
+        "qa_convenience": 6,
+        "qa_affordability": 8,
     }
     queries = {case.query for case in ADVISOR_CASES}
-    assert "전세가 좋을까 월세가 좋을까?" in queries
+    assert "특별한 투자처는 없고 이 집에서 3년 정도 살 계획인데, 전세가 좋을까 월세가 좋을까?" in queries
     assert "수원에서 내 예산과 대출로 제일 좋은 집이 뭐야?" in queries
     assert "이 동네 집값 앞으로 오를까 내릴까?" in queries
     assert "지금 사는 게 나을까, 1~2년 기다리는 게 나을까?" in queries

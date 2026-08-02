@@ -92,6 +92,150 @@ def test_report_never_republishes_sex_offender_or_synthetic_owner_identity():
     assert len(result["budget"]["scenarios"]["base"]) == 3
 
 
+def test_gui_defaults_to_auto_selected_finance_program_on_first_load():
+    """첫 로드 시 selected_finance_program_id를 '__none__'으로 강제하면 백엔드가
+    program=None으로 시뮬레이션해 대출을 아예 안 쓴 것으로 계산한다. '구매가능'
+    필터는 최적 대출 상품 가입을 가정해 예산을 산정하므로, 상세페이지도 첫
+    로드부터 최적 상품을 자동 선택(null → 백엔드 auto-pick)해야 필터와 일치한다."""
+    gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
+        encoding="utf-8")
+    assert "selected_finance_program_id:null" in gui
+    assert (
+        "defaultAssetInputs=function(){return {...defaultAssetInputsBase(),"
+        "selected_finance_program_id:'__none__'}}"
+    ) not in gui
+
+
+def test_gui_finance_program_selection_does_not_resubmit_stale_zero_loan():
+    """대출액 입력칸은 화면에 보여주는 자동 추천값을 항상 표시하지만, 이 값을
+    매번 collectAssetInputs()가 '사용자가 명시적으로 입력한 값'으로 재제출하면
+    안 된다(0으로 렌더된 순간 그 0이 영구 고정돼 대출 미적용과 동일해진다).
+    사용자가 실제로 입력칸을 편집했을 때만 state.assetInputs에 반영돼야 한다."""
+    gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
+        encoding="utf-8")
+    assert (
+        "value.requested_loan_amount_manwon="
+        "state.assetInputs?.requested_loan_amount_manwon??null"
+    ) in gui
+    assert "value.requested_loan_amount_manwon=loanInputValue()??state.assetInputs" \
+        not in gui
+
+
+def test_gui_auto_fills_zero_minor_children_for_single_marital_status():
+    """미혼(single) 선택 시 미성년 자녀 수를 비워두면 finance_tool.py가 이를
+    None으로 받아 '미성년 자녀 수 미입력' 확인 필요 플래그를 띄운다. 미혼이면
+    자녀 수 0을 자동으로 채워 넣어 불필요한 확인 요청을 피한다."""
+    gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
+        encoding="utf-8")
+    assert "syncMinorChildrenDefault" in gui
+    assert "maritalStatus').value==='single'" in gui
+
+
+def test_gui_finance_series_toggle_preserves_accordion_state_without_full_reload():
+    """금융상품 체크박스를 눌러 재계산할 때 화면 전체를 로딩 애니메이션으로
+    덮어쓰면 재렌더 후 <details> 아코디언이 전부 닫힌 상태로 리셋된다. 로딩
+    화면 대신 가벼운 busy 표시를 쓰고, 재렌더 전후로 아코디언 열림 상태를
+    캡처/복원해야 한다."""
+    gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
+        encoding="utf-8")
+    for token in ("captureDetailsState", "restoreDetailsState",
+                  "restoreDetailsState(__openDetails);bindReportUi()",
+                  "btn.classList.add('busy')"):
+        assert token in gui
+    assert (
+        "current.selected_finance_program_id='__none__';state.assetInputs=current;"
+        "state.financeSelectionInFlight=true;$('reportContent').innerHTML="
+        "reportLoadingMarkup();"
+    ) not in gui
+
+
+def test_gui_has_exactly_one_renderjeonseprimaryrisk_definition():
+    """gui.html이 세션 내내 반복해 온 '뒤에 있는 재할당(name=function(){})이
+    앞선 function 선언을 조용히 덮어써 죽은 코드를 만드는' 패턴에 다시
+    당했었다 — 이전 두 차례 수정이 실제로는 뒤에 있는 진짜 활성 정의가 아니라
+    앞의 죽은 function 선언에 적용돼 배포해도 반영되지 않았다. 죽은 선언을
+    제거해 정의가 정확히 하나만 남았는지 회귀 검증한다."""
+    gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
+        encoding="utf-8")
+    assert gui.count("renderJeonsePrimaryRisk") == 2  # 정의 1 + 호출부 1
+    assert "function renderJeonsePrimaryRisk(p,cs){" not in gui
+    assert "renderJeonsePrimaryRisk=function(p,cs){" in gui
+
+
+def _jeonse_primary_risk_card_source() -> str:
+    gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
+        encoding="utf-8")
+    start = gui.find("renderJeonsePrimaryRisk=function")
+    end = gui.find("};", start) + 2
+    return gui[start:end]
+
+
+def test_gui_jeonse_ratio_card_leads_with_plain_language_summary():
+    """P10/P50/P90·80%초과·100%초과·보수추정 6개 숫자를 처음부터 한꺼번에
+    보여주면 이 지표를 모르는 사용자가 이해하기 어렵다. 기본으로는 등급
+    헤드라인과 '매물 100곳 중 약 X곳' 같은 한 문장 요약만 보여준다."""
+    card = _jeonse_primary_risk_card_source()
+    assert "overFullPct=Math.round(Number(th.post_contract_over_1_0||0)*1000)/10" \
+        in card
+    assert "꼴로 건물을 팔아도 보증금을 온전히 못 돌려받는 상황이 시뮬레이션됐어요" \
+        in card
+
+
+def test_gui_jeonse_ratio_card_drops_the_six_quantile_probability_boxes():
+    """사용자가 P10/P50/P90(낮은·중앙·높은 추정)과 80%·100% 초과 확률,
+    보수 추정까지 6개 박스를 아예 없애 달라고 요청했다."""
+    card = _jeonse_primary_risk_card_source()
+    for token in ("낮은 추정", "중앙 추정", "높은 추정", "80% 초과",
+                  "100% 초과", "보수 추정", 'class="ratio-range"',
+                  'class="status-grid contract-status"'):
+        assert token not in card
+
+
+def test_gui_guarantee_exposure_updates_when_a_product_is_selected():
+    """반환보증 상품을 선택해도 '반환위험 노출액'이라는 라벨 자체가 통째로
+    '보증 대상액'으로 바뀌어 버려서, 사용자 입장에서는 같은 지표가 안 바뀌는
+    것처럼 보였다. 선택 여부와 무관하게 '반환위험 노출액' 라벨은 항상 보이고
+    값이 (전체 보증금 - 보증 대상액)으로 실제로 줄어들어야 한다."""
+    gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
+        encoding="utf-8")
+    assert (
+        "exposure=Math.max(0,Number(review.uninsured_exposure_manwon||0)-covered)"
+    ) in gui
+    assert (
+        '<div class="coverage-summary">반환위험 노출액 <b>${reportMan(exposure)}</b>'
+    ) in gui
+    assert "가입 심사 통과 가정 · 보증 대상액 <b>${reportMan(covered)}</b>`:`미가입 가정" \
+        not in gui
+
+
+def test_gui_facility_tile_does_not_overflow_grid_on_narrow_mobile_screens():
+    """police/fire_station 캡션이 '반경 300m 내 0곳 · 최근접 도보 약 42.1분'처럼
+    길어지면서, 그리드 아이템(및 그 자식들)의 기본 min-width:auto 때문에 실제
+    390px 모바일 화면에서 3번째 컬럼이 화면 밖으로 밀려나는 버그가 있었다
+    (Chrome CDP로 390px 뷰포트 렌더링을 재현해 확인). 그리드 아이템과 그 자식
+    모두에 min-width:0을 줘야 콘텐츠가 줄바꿈되고 넘치지 않는다."""
+    gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
+        encoding="utf-8")
+    assert (
+        ".facility-tile{min-height:92px;border-radius:15px;background:#f6f8fa;"
+        "padding:12px 9px;display:grid;align-content:center;text-align:center;"
+        "min-width:0}"
+    ) in gui
+    assert ".facility-tile>*{min-width:0}" in gui
+    assert "max-width:100%;margin:5px auto 0" in gui
+
+
+def test_gui_facility_tile_leads_with_walk_minutes_for_sparse_facilities():
+    """경찰서/소방서는 300m 반경 안에 있는 경우가 드물어 반경 집계 건수만
+    보여주면 도보 15분 이내 조건으로 찾은 매물인데도 '0건'만 크게 보여
+    모순처럼 보인다. police/fire_station은 최근접 도보 시간을 대표 수치로
+    앞세우고, 반경 집계 건수는 보조 설명으로 내려야 한다."""
+    gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
+        encoding="utf-8")
+    assert "isNearestType=key==='police'||key==='fire_station'" in gui
+    assert "headline=isNearestType&&walk!=null?`도보 약 ${walk}분`" in gui
+
+
 def test_gui_has_mobile_report_tabs_and_simulator_controls():
     gui = (Path(__file__).parents[1] / "src" / "server" / "gui.html").read_text(
         encoding="utf-8")

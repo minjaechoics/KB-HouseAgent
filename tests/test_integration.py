@@ -120,10 +120,21 @@ def test_lease_compare_uses_probabilistic_paths_not_one_line_conversion():
         "monthly_living_cost_manwon": 120, "income_decile": 5,
         "preferred_sido": "경기", "preferred_gugun": "수원시 팔달구",
     })
-    result = agent.handle(
+    # 투자 여력·거주기간을 모르는 첫 턴은 계산 대신 상담 질문으로 응답한다.
+    first = agent.handle(
         session, "전세가 좋을까 월세가 좋을까?", direct_recommend=True)
+    assert first["status"] == "qa"
+    assert first["qa_type"] == "lease_compare"
+    assert first["needs_clarification"] is True
+    assert "lease_monte_carlo" not in first
+
+    # 같은 세션의 다음 턴은(규칙 플래너라 답변을 못 채워도) 한 번만 묻고
+    # 이후에는 확정값/기본값으로 실제 비교를 계산한다.
+    result = agent.handle(
+        session, "음, 전세가 좋을까 월세가 좋을까?", direct_recommend=True)
     assert result["status"] == "qa"
     assert result["qa_type"] == "lease_compare"
+    assert "needs_clarification" not in result
     comparison = result["lease_monte_carlo"]
     assert comparison["path_count_per_option"] == 3000
     assert set(comparison["scenarios"]) == {"전세", "월세"}
@@ -132,6 +143,69 @@ def test_lease_compare_uses_probabilistic_paths_not_one_line_conversion():
     assert any(
         item["tool"] == "lease_monte_carlo"
         for item in result["agent_trace"]["tools"])
+    assert result["lease_consult"]["archetype"] in {"A", "B", "C"}
+
+
+def test_lease_archetype_decision_tree_is_deterministic():
+    from src.agent.harness import _decide_lease_archetype
+    assert _decide_lease_archetype("yes", None, "low") == "A"
+    assert _decide_lease_archetype("no", 3, "low") == "B"
+    assert _decide_lease_archetype("no", None, "high") == "C"
+    # 보증금 반환 위험이 높으면 투자 기회가 있어도 원금 보호가 우선한다.
+    assert _decide_lease_archetype("yes", None, "high") == "C"
+    # 투자 기회가 없고 거주기간이 2년 미만/불확실하면 계약 유연성을 우선한다.
+    assert _decide_lease_archetype("no", 1, "low") == "A"
+    assert _decide_lease_archetype("no", None, "low") == "A"
+
+
+def test_lease_consult_message_leads_with_archetype_not_raw_monte_carlo_winner():
+    """실제 LLM(gpt-4.1-mini)은 '순자산이 더 큰 쪽'을 근거로 archetype
+    지시를 무시하고 결론을 뒤집는 경향이 있었다(직접 확인함: 투자 여력이
+    있다는 A 시나리오에서도 순자산이 큰 전세를 계속 권함). 그래서 결론
+    문장 자체를 코드가 먼저 확정해 LLM 합성 실패 시 폴백으로도, 합성
+    성공 시에도 항상 이 문장으로 시작하게 한다."""
+    from src.agent.harness import _lease_consult_message
+    message = _lease_consult_message("A", "현재 입력 기준으로 전세가 우세합니다.")
+    assert message.startswith("목돈을 투자에 활용할 계획이 있으시니")
+    assert "월세" in message
+    assert "전세가 우세합니다" in message  # 정량 비교 수치는 참고로 남긴다
+
+
+def test_lease_compare_preferences_mode_changes_archetype_without_asking():
+    """'성장형/균형형/안정형'(preferences.mode)이 실제로 결과를 바꾸는지
+    확인한다 — 이전에는 이 설정이 전세/월세 상담에 전혀 영향을 주지 않았다."""
+    agent = JeonseAgent("rule")
+    base_user = {
+        "user_id": "LEASE-PREF", "age": 29,
+        "monthly_income_manwon": 320, "total_asset_manwon": 8000,
+        "monthly_living_cost_manwon": 120, "income_decile": 5,
+        "preferred_sido": "경기", "preferred_gugun": "수원시 팔달구",
+    }
+
+    growth_session = agent.new_session(
+        {**base_user, "preferences": {"mode": "growth", "approved": True}})
+    growth_session["lease_consult"]["planned_stay_years"] = 3
+    growth_result = agent.handle(
+        growth_session, "전세가 좋을까 월세가 좋을까?", direct_recommend=True)
+    assert growth_result.get("needs_clarification") is not True
+    assert growth_result["lease_consult"]["investment_edge"] == "yes"
+    assert growth_result["lease_consult"]["investment_edge_is_default"] is True
+    assert growth_result["lease_consult"]["archetype"] == "A"
+
+    stable_session = agent.new_session(
+        {**base_user, "preferences": {"mode": "stable", "approved": True}})
+    stable_session["lease_consult"]["planned_stay_years"] = 3
+    stable_result = agent.handle(
+        stable_session, "전세가 좋을까 월세가 좋을까?", direct_recommend=True)
+    assert stable_result["lease_consult"]["investment_edge"] == "no"
+    assert stable_result["lease_consult"]["archetype"] == "B"
+
+    # balanced는 투자 여력을 되묻는다(성향만으로 기본값을 만들지 않는다).
+    balanced_session = agent.new_session(
+        {**base_user, "preferences": {"mode": "balanced", "approved": True}})
+    balanced_first = agent.handle(
+        balanced_session, "전세가 좋을까 월세가 좋을까?", direct_recommend=True)
+    assert balanced_first["needs_clarification"] is True
 
 
 def test_best_affordable_goal_calls_pareto_engine_directly():
@@ -178,7 +252,9 @@ def test_best_affordable_normalizes_broad_llm_region_to_session_db_scope():
     assert prop_trace["row_count"] > 0
 
 
-def test_advisor_endpoint_returns_map_ready_recommendations():
+def test_advisor_endpoint_is_consult_only_and_redirects_property_recommendations():
+    """챗봇 상담(/api/advisor/chat)은 상담원 조언자 역할만 하고 매물을 직접
+    추천하지 않는다 — 그 기능은 지도 필터/조건추가 화면의 몫이다."""
     from fastapi.testclient import TestClient
     from src.server.app import app
 
@@ -197,14 +273,14 @@ def test_advisor_endpoint_returns_map_ready_recommendations():
     assert response.status_code == 200
     result = response.json()
     assert result["advisor_channel"] is True
-    assert result["status"] == "recommendation"
-    assert result["recommended_properties"]
-    first = result["recommended_properties"][0]
-    assert first["property_id"]
-    assert first["lat"] is not None and first["lng"] is not None
+    assert result["status"] == "qa"
+    assert result["qa_type"] == "advisor_redirect"
+    assert "recommended_properties" not in result or not result["recommended_properties"]
+    assert "지도" in result["message"]
 
 
-def test_advisor_remembers_history_and_returns_lowest_deposit_without_budget_cap():
+def test_advisor_endpoint_still_answers_decision_support_questions():
+    """매물 추천은 막지만 전세/월세 비교 같은 상담 질문은 그대로 답한다."""
     from fastapi.testclient import TestClient
     from src.server.app import app
 
@@ -216,34 +292,37 @@ def test_advisor_remembers_history_and_returns_lowest_deposit_without_budget_cap
             "preferred_sido": "경기",
             "preferred_gugun": "수원시 팔달구",
         }).json()
-        first = client.post("/api/advisor/chat", json={
+        response = client.post("/api/advisor/chat", json={
             "session_id": session["session_id"],
-            "text": "월세 매물을 먼저 추천해줘",
+            "text": "특별한 투자처는 없고 3년 정도 살 건데 전세가 좋을까 월세가 좋을까?",
         })
-        second = client.post("/api/advisor/chat", json={
-            "session_id": session["session_id"],
-            "text": "예산 상관없이 보증금 가장 낮은걸로 알려줘",
-        })
+    assert response.status_code == 200
+    result = response.json()
+    assert result["status"] == "qa"
+    assert result["qa_type"] == "lease_compare"
 
-    assert first.status_code == 200
-    assert second.status_code == 200
-    result = second.json()
-    assert result["status"] == "recommendation"
-    assert result["recommended_properties"]
-    assert all(
-        row["transaction_type"] != "매매"
-        for row in result["recommended_properties"])
-    deposits = [
-        float(row["deposit_manwon"])
-        for row in result["recommended_properties"]]
+
+def test_recommend_intent_remembers_history_and_returns_lowest_deposit_without_budget_cap():
+    """상담 채널(consult_only)이 아닌 일반 harness 호출에서는 'recommend'
+    의도가 여전히 대화 맥락을 이어받아 동작한다(예산 무시 요청 등)."""
+    agent = JeonseAgent("rule")
+    session = agent.new_session({
+        "user_id": "RECOMMEND-HISTORY", "age": 29,
+        "monthly_income_manwon": 400, "total_asset_manwon": 10000,
+        "monthly_living_cost_manwon": 120, "income_decile": 5,
+        "preferred_sido": "경기", "preferred_gugun": "수원시 팔달구",
+    })
+    first = agent.handle(session, "월세 매물을 먼저 추천해줘", direct_recommend=True)
+    assert first["status"] == "recommendation"
+    second = agent.handle(
+        session, "예산 상관없이 보증금 가장 낮은걸로 알려줘", direct_recommend=True)
+    assert second["status"] == "recommendation"
+    assert second["groups"][0]
+    recommendations = [row for group in second["groups"].values() for row in group]
+    assert recommendations
+    assert all(row["transaction_type"] != "매매" for row in recommendations)
+    deposits = [float(row["deposit_manwon"]) for row in recommendations]
     assert deposits == sorted(deposits)
-    assert not any(
-        "보증금 ≤" in atom for atom in result.get("atoms") or [])
-    assert result["conversation_memory"]["prior_entries_used"] == 2
-    assert (
-        result["agent_trace"]["planner"]["llm"]["advisor_history_turns_used"]
-        == 2
-    )
 
 
 def test_market_wait_and_contract_questions_reuse_selected_report():
