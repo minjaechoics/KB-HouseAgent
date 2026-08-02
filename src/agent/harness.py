@@ -834,15 +834,25 @@ class JeonseAgent:
         need_safety = slots.get("min_safety_score") is not None
         need_conv = slots.get("min_convenience_score") is not None
         if need_safety or need_conv:
-            # 후보가 많으면 상위 N만 계산(성능). ATOM 분류 전이므로 예산/안전 통과분에 한정.
-            calc_pool = candidates.head(120)
+            # 캐시된 공공데이터가 없으면 매물 1건마다 NAVER 지역검색 실호출이
+            # 필요하다. 120건을 다 돌리면 데모 중 응답이 지연되므로 상위 20건만
+            # 계산한다(ATOM 분류 전이므로 예산/안전 통과분에 한정).
+            calc_pool = candidates.head(20)
+            if need_safety:
+                self.safety_tool.local_search.begin_request(max_calls=len(calc_pool) * 2)
+            if need_conv:
+                self.convenience_tool.local_search.begin_request(max_calls=len(calc_pool) * 5)
             for _, r in calc_pool.iterrows():
+                context = " ".join(str(r.get(key) or "")
+                                    for key in ("sido", "gugun", "dong")).strip()
                 if need_safety:
                     safety_map[r["property_id"]] = \
-                        self.safety_tool.assess(r["lat"], r["lng"])["safety_score"]
+                        self.safety_tool.assess(r["lat"], r["lng"],
+                                                context=context)["safety_score"]
                 if need_conv:
                     conv_map[r["property_id"]] = \
-                        self.convenience_tool.assess(r["lat"], r["lng"])["convenience_score"]
+                        self.convenience_tool.assess(r["lat"], r["lng"],
+                                                     context=context)["convenience_score"]
 
         # 3) ATOM 분해 + 매물별 만족도
         atom_slots = self._slots_for_atoms(slots, info, aff, commute_map,
