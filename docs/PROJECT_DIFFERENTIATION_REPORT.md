@@ -75,7 +75,7 @@ AI는 대화 중 추정한 조건을 임의로 적용하지 않고, 사용자가
 서비스와의 실질적인 차이다.
 
 관련 구현: `src/fraud_risk/`, `src/owner_asset_ratio/`, `src/senior_deposit/`
-관련 문서: `FRAUD_RISK_ACTUAL_LABEL_MODEL.md`, `docs/OWNER_ASSET_RATIO_PIPELINE.md`,
+관련 문서: `docs/FRAUD_RISK_ACTUAL_LABEL_MODEL.md`, `docs/OWNER_ASSET_RATIO_PIPELINE.md`,
 `docs/SENIOR_DEPOSIT_MODEL.md`
 
 ### 3.3 예측 → 생애주기 비교 시뮬레이션
@@ -89,7 +89,7 @@ AI는 대화 중 추정한 조건을 임의로 적용하지 않고, 사용자가
 분포(P10~P90)와 현금고갈확률, CVaR 5% 등으로 답한다.
 
 관련 구현: `src/simulation/`, `src/report/budget.py`, `src/report/service.py`
-관련 문서: `docs/PROBABILISTIC_DECISION_ENGINE.md`, `ASSET_SIMULATION_AND_WEB_SEARCH.md`
+관련 문서: `docs/PROBABILISTIC_DECISION_ENGINE.md`, `docs/ASSET_SIMULATION_AND_WEB_SEARCH.md`
 
 > 구현 현황: 매물 상세 리포트 화면뿐 아니라 대화형 질문("전세가 좋을까
 > 월세가 좋을까")에 대응하는 `qa_lease_compare` 의도도 동일한 Monte Carlo

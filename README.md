@@ -2460,10 +2460,10 @@ KB HouseAgent의 핵심은 화려한 한 문장의 추천이 아니다. 자연�
 | `reports/senior_deposit/actual_evaluation.json` | 선순위 하위모형 평가 |
 | `reports/jeonse_ratio/model_card.md` | 전세가율 가정 |
 | `reports/agent_scheduler_benchmark.json` | 스케줄러 비교 |
-| `CURRENT_FRAUD_RISK_MODEL.md` | 운영 위험모형 설명 |
-| `AGENTIC_SYSTEM_ARCHITECTURE.md` | 에이전트 구조 |
-| `DATABASE_QUERY_CONDITION_GUIDE.md` | SQL 가능 조건 |
-| `DATASET_SOURCES_AND_USAGE.md` | 발표용 데이터셋 출처·활용 요약(§5 발췌) |
+| `docs/CURRENT_FRAUD_RISK_MODEL.md` | 운영 위험모형 설명 |
+| `docs/AGENTIC_SYSTEM_ARCHITECTURE.md` | 에이전트 구조 |
+| `docs/DATABASE_QUERY_CONDITION_GUIDE.md` | SQL 가능 조건 |
+| `docs/DATASET_SOURCES_AND_USAGE.md` | 발표용 데이터셋 출처·활용 요약(§5 발췌) |
 | `reports/experiments/hallucination_*.json` | §20.7 환각 벤치마크 실행 결과(optimized/naive) |
 
 ---
