@@ -28,6 +28,7 @@ GEOCODE_URL = "https://maps.apigw.ntruss.com/map-geocode/v2/geocode"
 REVERSE_GEOCODE_URL = "https://maps.apigw.ntruss.com/map-reversegeocode/v2/gc"
 DIRECTIONS_URL = "https://maps.apigw.ntruss.com/map-direction/v1/driving"
 STATIC_MAP_URL = "https://maps.apigw.ntruss.com/map-static/v2/raster"
+LOCAL_SEARCH_URL = "https://naverapihub.apigw.ntruss.com/search/v1/local"
 TMAP_TRANSIT_URL = "https://apis.openapi.sk.com/transit/routes"
 TMAP_TRANSIT_SUMMARY_URL = "https://apis.openapi.sk.com/transit/routes/sub"
 
@@ -108,6 +109,26 @@ def _private_credentials() -> tuple[str, str]:
     return client_id, client_secret
 
 
+def _private_local_search_credentials() -> tuple[str, str]:
+    """Naver Developers 지역검색 오픈API 키. NCP Maps 키와는 발급처가 다르다."""
+    client_id = os.environ.get("NAVER_API_HUB_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("NAVER_API_HUB_CLIENT_SECRET", "").strip()
+    if client_id and client_secret:
+        return client_id, client_secret
+
+    private_file = config.ROOT / "deploy" / "NAVER_API_HUB_KEYS.private.env"
+    if private_file.exists():
+        values: dict[str, str] = {}
+        for raw in private_file.read_text(encoding="utf-8-sig").splitlines():
+            raw = raw.strip()
+            if raw and not raw.startswith("#") and "=" in raw:
+                key, value = raw.split("=", 1)
+                values[key.strip()] = value.strip()
+        client_id = values.get("NAVER_API_HUB_CLIENT_ID", "")
+        client_secret = values.get("NAVER_API_HUB_CLIENT_SECRET", "")
+    return client_id, client_secret
+
+
 def _private_tmap_app_key() -> str:
     """Read the server-side TMAP appKey without exposing it to the browser."""
     app_key = os.environ.get("TMAP_APP_KEY", "").strip()
@@ -142,6 +163,12 @@ class MapTool:
         self.online = bool(self.client_id and self.client_secret) and not live_disabled
         self.tmap_app_key = _private_tmap_app_key()
         self.tmap_online = bool(self.tmap_app_key) and not live_disabled
+        self.local_search_client_id, self.local_search_client_secret = \
+            _private_local_search_credentials()
+        self.local_search_online = (
+            bool(self.local_search_client_id and self.local_search_client_secret)
+            and not live_disabled
+        )
         self.timeout_seconds = timeout_seconds
         self.route_cache_ttl_seconds = max(
             0, int(os.environ.get("MAP_ROUTE_CACHE_TTL_SECONDS", "900")))
@@ -161,6 +188,7 @@ class MapTool:
             "configured": self.online,
             "naver_configured": self.online,
             "tmap_configured": bool(getattr(self, "tmap_online", False)),
+            "local_search_configured": bool(getattr(self, "local_search_online", False)),
             "driving": "naver_directions5" if self.online else "estimated",
             "transit": ("tmap_transit" if getattr(self, "tmap_online", False)
                         else "estimated_haversine"),
@@ -177,6 +205,48 @@ class MapTool:
     def has_live_route(self, mode: str) -> bool:
         return self.route_provider(mode) in {"naver_directions5", "tmap_transit"}
 
+    def _search_place(self, query: str) -> Optional[dict]:
+        """상호·기관명을 좌표로 변환한다. Geocoding과 달리 POI/업체명 검색용 API다.
+
+        mapx/mapy는 WGS84 경위도 * 1e7 정수로 온다고 문서화되어 있으나, 발급
+        시점에 따라 과거 KATEC 좌표계가 섞여 나온 사례가 있어 대한민국 경위도
+        범위를 벗어나면 좌표를 지어내는 대신 실패로 처리한다.
+        """
+        if not self.local_search_online:
+            return None
+        try:
+            response = requests.get(
+                LOCAL_SEARCH_URL,
+                headers={
+                    "X-NCP-APIGW-API-KEY-ID": self.local_search_client_id,
+                    "X-NCP-APIGW-API-KEY": self.local_search_client_secret,
+                },
+                params={"query": query, "display": 5, "sort": "random"},
+                timeout=self.timeout_seconds,
+            )
+            response.raise_for_status()
+            items = response.json().get("items") or []
+        except requests.RequestException:
+            return None
+        for item in items:
+            try:
+                lat = float(item.get("mapy")) / 1e7
+                lng = float(item.get("mapx")) / 1e7
+            except (TypeError, ValueError):
+                continue
+            if not (33.0 <= lat <= 39.5 and 124.0 <= lng <= 132.0):
+                continue
+            title = str(item.get("title") or query).replace(
+                "<b>", "").replace("</b>", "")
+            return {
+                "ok": True, "query": query, "lat": lat, "lng": lng,
+                "address": item.get("roadAddress") or item.get("address"),
+                "road_address": item.get("roadAddress"),
+                "jibun_address": item.get("address"),
+                "place_name": title, "source": "naver_local_search",
+            }
+        return None
+
     def geocode(self, query: str) -> dict:
         query = str(query or "").strip()
         if not query:
@@ -186,6 +256,11 @@ class MapTool:
         if known:
             return {"ok": True, "query": query, **known,
                     "source": "audited_landmark_catalog"}
+
+        # 상호·기관명은 Geocoding(주소 전용)으로 못 찾으므로 지역검색을 먼저 시도한다.
+        place = self._search_place(query)
+        if place is not None:
+            return place
 
         if self.online:
             try:
