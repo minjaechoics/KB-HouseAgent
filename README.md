@@ -5,9 +5,9 @@
 **문서 유형:** 시스템 논문 및 재현성 기술보고서  
 **프로젝트명:** KB HouseAgent / 청년 주택 의사결정 도우미  
 **팀명:** 똘똘한최  
-**기준 코드:** Git commit `7dc3117`  
+**기준 코드:** Git commit `7946a0a`  
 **기준 데이터베이스:** `data/generated/jeonse_helper.db`  
-**스냅샷 기준일:** 2026-07-30, Asia/Seoul  
+**스냅샷 기준일:** 2026-08-03, Asia/Seoul (최초 작성 2026-07-30, 이후 상담 채널·전세가율 위험신호·환각 벤치마크 관련 개정 반영)  
 **문서 상태:** 구현·데이터·실험 산출물을 코드와 대조한 재현성 초안  
 **언어:** 한국어
 
@@ -21,7 +21,7 @@
 
 장기 결과는 고정 상승률 한 줄이 아니라 월 단위 10,000개 몬테카를로 경로로 계산한다. 소득·물가·금융자산수익률·주택가격 충격의 상관을 반영하고, 실직·출산·상속·금리 2%p 상승을 시나리오화한다. 후보 선택은 자산 성장, 월 부담, 안전, 통근, 유동성, 부채를 동시에 다루는 파레토 분석과 혼합정수계획 형태로 기술된다. 집값 전망은 국토교통부 실거래가 월별 패널에서 계절 기준선, Ridge, 히스토그램 기반 그래디언트 부스팅, LightGBM을 walk-forward 방식으로 비교하고, conformal 보정으로 80%·95% 예측구간을 만든다.
 
-2026-07-30 활성 프로토타입은 수원시 팔달구 948개 매물, 금융상품 83개, 실거래 상세 284,052건, 가격 관측 931,929건, R-ONE 관측 88,541건을 포함한다. 현 집값모형은 387개 walk-forward 검증 표본에서 LightGBM이 월 로그수익률 MAE 0.03044, 방향정확도 0.6227을 보였고, conformal 보정 후 구간 포함률은 80.36%와 95.35%였다. 다만 활성 매물은 실시간 중개 플랫폼 재고가 아니며, 집주인 실제 총자산과 건물별 실제 선순위보증금 라벨은 없다. 따라서 본 시스템은 계약·대출·법률 판정을 대신하는 자동 의사결정기가 아니라, 불확실성과 근거를 함께 보여주는 연구용 의사결정 지원 시스템이다.
+2026-07-30 활성 프로토타입은 수원시 팔달구 948개 매물, 금융상품 83개, 실거래 상세 284,052건, 가격 관측 931,929건, R-ONE 관측 88,541건을 포함한다. 현 집값모형은 387개 walk-forward 검증 표본에서 LightGBM이 월 로그수익률 MAE 0.03044, 방향정확도 0.6227을 보였고, conformal 보정 후 구간 포함률은 80.36%와 95.35%였다. 2026-08-03 개정 기준 오프라인 회귀시험은 263건 중 259건 통과했고(무관한 사전 실패 4건, §20.6), 결정론적 채점 기반 100개 사례 환각 벤치마크에서는 전체 에이전틱 파이프라인이 naive 단일호출 대조군 대비 반복 실행에서 91~100% 대 69%를 기록했다(§20.7). 다만 활성 매물은 실시간 중개 플랫폼 재고가 아니며, 집주인 실제 총자산과 건물별 실제 선순위보증금 라벨은 없다. 따라서 본 시스템은 계약·대출·법률 판정을 대신하는 자동 의사결정기가 아니라, 불확실성과 근거를 함께 보여주는 연구용 의사결정 지원 시스템이다.
 
 **주요어:** 청년 주거, 에이전틱 RAG, Text-to-SQL, 전세보증 사고, 몬테카를로 시뮬레이션, 다목적 최적화, conformal prediction, 의사결정 감사
 
@@ -60,8 +60,12 @@ The active 2026-07-30 prototype contains 948 properties in Paldal-gu, Suwon,
 transactions, and 88,541 R-ONE observations. The selected LightGBM forecasting
 model achieved a monthly log-return MAE of 0.03044 and directional accuracy of
 0.6227 on 387 walk-forward observations; calibrated 80% and 95% intervals
-attained empirical coverages of 0.8036 and 0.9535. A full offline regression
-suite passed 212 tests. We explicitly identify limitations: the active
+attained empirical coverages of 0.8036 and 0.9535. As of the 2026-08-03
+revision, the offline regression suite passed 259 of 263 tests (4 known,
+unrelated GUI string-assertion failures predating this revision); a separate
+100-case hallucination benchmark comparing the full agentic pipeline against
+a naive single-shot baseline scored 91-100% vs. 69% across repeated live runs.
+We explicitly identify limitations: the active
 inventory is not a live brokerage feed, property coordinates are analytical
 representative points, owner assets are population-level estimates, and
 building-level legal senior deposits lack verified labels. Accordingly, KB
@@ -233,7 +237,7 @@ $$
 모바일/웹 UI
   ├─ 시작·프로필·초기조건
   ├─ 지도·필터·AI 조건 승인
-  ├─ AI 추천/상담
+  ├─ AI 상담(의사결정 조언 전용, 매물 추천 없음)
   └─ 주거·자산 진단 리포트
           │
 FastAPI 서비스 계층
@@ -367,7 +371,9 @@ OpenAI Structured Outputs는 단순 JSON mode와 달리 주어진 JSON Schema �
 
 ## 4.4 대화 기억
 
-AI 추천/상담 채널에서는 같은 세션의 사용자·도우미 발화를 Planner와 최종 합성 프롬프트에 다시 제공한다. 다만 개인정보 최소화 원칙에 따라 무제한 영구 기억이 아니라 세션 범위의 대화 상태다. 조건편집 채널과 추천채널은 목적이 다르므로 동일한 UI 동작으로 합치지 않는다.
+AI 상담 채널(`/api/advisor/chat`)에서는 같은 세션의 사용자·도우미 발화를 Planner와 최종 합성 프롬프트에 다시 제공한다. 다만 개인정보 최소화 원칙에 따라 무제한 영구 기억이 아니라 세션 범위의 대화 상태다. 조건편집 채널과 상담채널은 목적이 다르므로 동일한 UI 동작으로 합치지 않는다.
+
+이 채널은 상담원 조언자 역할로 범위를 제한한다. `recommend`, `goal_financed_jeonse`, `goal_best_affordable`, `goal_alternative_areas`처럼 매물을 직접 검색·추천하는 의도가 들어오면 해당 도구를 실행하지 않고 지도 필터·AI 조건 추가로 안내하는 메시지를 대신 반환한다(`harness.py`의 `consult_only` 플래그, `_PROPERTY_RECOMMENDING_INTENTS`). `qa_*` 의도(전세·월세 비교, 대출 자격, 계약 위험, 시장 전망 등)는 이 제한과 무관하게 그대로 동작한다. 매물 검색·추천 자체는 지도 화면과 CLI에서는 여전히 전체 경로로 동작하며, 이 채널에서만 의도적으로 좁혔다.
 
 ## 4.5 Text-to-SQL
 
@@ -1433,6 +1439,41 @@ $$
 
 시뮬레이션 숫자는 NumPy 기반 결정적 코드가 계산한다. LLM은 숫자를 생성하지 않고 P10/P50/P90, 고갈확률, 금리민감도, 주요 비용을 설명한다. LLM이 실패해도 그래프와 지표는 생성 가능하다.
 
+## 14.9 전세·월세 상담 유형(qa_lease_compare)
+
+순자산 중앙값 비교만으로는 "그래서 어떤 선택을 해야 하는가"에 답하지 못한다.
+투자 기회, 거주 예정 기간, 보증금 반환 위험이라는 세 축에 따라 결론이
+달라져야 하므로, 몬테카를로 비교 위에 결정론적 규칙(코드)이 정하는 세
+상담 유형을 추가했다.
+
+| 유형 | 우선 조건 | 권고 |
+|---|---|---|
+| A. 자산 운용형 | 대출금리보다 유리한 투자·사업 기회가 있음 | 월세(또는 반전세) — 목돈은 투자로, 계약 유연성 확보 |
+| B. 비용 절감형 | 투자 기회 없음 + 거주기간 2년 이상 | 전세 — 정책 대출·전세보증보험 활용해 월 비용 최소화 |
+| C. 안전 최우선형 | 보증금 반환 위험이 높음(다른 조건 무관) | 반전세·저보증금 월세 — 원금 보호 우선 |
+
+위험(C)이 최우선 순위이며, 그다음 투자 기회(A), 마지막으로 거주기간(B)
+순으로 판정한다. 투자 기회나 거주기간을 사용자가 아직 밝히지 않았고
+`preferences.mode`(성장형/균형형/안정형, §15.3)로도 추정할 수 없는 경우에만
+결합 질문 하나를 한 번 되묻고, 이후 대화에서는 세션에 저장된 값을 재사용한다.
+성장형은 투자 기회 "있음", 안정형은 "없음"을 기본 가정으로 삼아 불필요한
+재질문을 피한다.
+
+위험 신호는 새로 라벨링하지 않고 기존 신호를 재사용한다. 다가구 전세
+매물을 선택했으면 §12의 계약 후 전세가율 확률(`post_contract_over_1_0`,
+`post_contract_over_0_8`)을 쓰고, 특정 매물이 없으면 KHUG
+`region_accident_stats`(시군구별 실제 보증사고율, 부록 F)의 동일 시도 내
+백분위를 대체 신호로 쓴다. 이 표는 코드에 이미 있었지만 지금까지 어떤
+실행 경로에서도 조회되지 않았다.
+
+결론 문장은 LLM이 그 자리에서 정하지 않는다. gpt-4.1-mini로 직접 확인한
+결과, "결론은 A 유형을 따르라"는 프롬프트 지시만으로는 모델이 순자산
+중앙값이 큰 쪽을 근거로 결론을 다시 뒤집는 경우가 있었다. 그래서 유형별
+결론 문장을 코드가 먼저 확정하고(`_lease_consult_message`), LLM은 그
+문장으로 시작해 수치 근거만 덧붙이도록 지시를 바꿨다 — 숫자를 코드가
+정하고 LLM은 설명만 맡는다는 본 시스템의 일관된 원칙을 여기에도 적용한
+것이다.
+
 ---
 
 # 15. 부동산 × 금융상품 × 대출금액 최적화
@@ -1692,7 +1733,7 @@ UI는 감사데이터를 사람이 읽을 수 있는 근거트리로 재구성�
 2. 프로필·금융 정밀판정 입력.
 3. 수원시 팔달구 고정 프로토타입 초기조건.
 4. 지도·요약 필터·정렬.
-5. AI 조건 추가 또는 AI 추천/상담.
+5. AI 조건 추가 또는 AI 상담(의사결정 조언, 매물 추천 없음).
 6. 매물 상세.
 7. 예산, 자산 시뮬레이션, 치안, 생활편의, 계약, 최종평가.
 
@@ -1825,19 +1866,60 @@ RAGAS 계열 지표는 보조 자동평가로 쓸 수 있지만, 금융·주거�
 
 ## 20.6 현재 커밋의 회귀시험
 
-본 문서 작성 후 2026-07-30에 다음 명령을 실행했다.
+본 문서 최초 작성 후 2026-07-30에 다음 명령을 실행했을 때는 **212 passed,
+1 warning, 64.27초**였다. 2026-08-03(commit `7946a0a`) 재실행 결과는
+**259 passed, 4 failed, 4 skipped**다.
 
 ```powershell
 $env:JEONSE_LLM='mock'
 py -3.13 -m pytest -q
 ```
 
-결과는 **212 passed, 1 warning, 64.27초**였다. warning은 FastAPI
-TestClient가 사용하는 Starlette/httpx 호환성 deprecation이며 시험 실패는
-아니다. `JEONSE_LLM=api`인데 키가 없는 환경에서는
+4건 실패는 모두 이번 개정에서 다룬 상담·리포트 로직과 무관한, 이전부터
+있던 `gui.html` 문자열 검증 회귀시험(모바일 리포트 탭 구성, 뉴스/수치
+설명 병렬 실행 표시, 선순위보증금 비등록 입력 신뢰도 문구)의 드리프트다.
+숨기지 않고 그대로 남겨두었으며 후속 커밋에서 정리가 필요하다. warning은
+FastAPI TestClient가 사용하는 Starlette/httpx 호환성 deprecation이며 시험
+실패는 아니다. `JEONSE_LLM=api`인데 키가 없는 환경에서는
 `scripts/test_condition_workflow_live.py` 수집 중 의도적으로 초기화가
 실패한다. 그러므로 오프라인 전체 회귀는 mock을 명시하고, 실제 OpenAI
 호출은 키와 비용 승인이 있는 별도 라이브 시험으로 실행해야 한다.
+
+## 20.7 환각 벤치마크(hallucination.py)
+
+`src/experiments/advisor_cases.py`·`advisor_hallucination.py`에 결정론적
+정답 채점(코드가 계산한 정답과 대조하며 LLM-as-judge를 쓰지 않는다) 기반
+100개 사례 벤치마크를 구성했다. 11개 카테고리(condition_dialogue,
+condition_new_atoms, best_affordable, alternative_areas, lease_compare,
+market_outlook, buy_or_wait, qa_finance, qa_safety, qa_convenience,
+qa_affordability)에 걸쳐 있으며, 실제 API(gpt-4.1-mini)로 두 조건을
+비교한다.
+
+- **optimized**: 본 시스템의 Atomic 검색·병렬 도구 실행·Text-to-SQL
+  파이프라인 전체.
+- **naive**: 같은 시스템 프롬프트와 사용자 요청을 LLM에 그대로 던지고
+  구조화 스키마 하나로만 추출하는 대조군(`NaiveWholePromptLLM`). 에이전틱
+  분해·병렬 도구 실행·atom 기반 검색이 전혀 없다.
+
+2026-08-02~03 세 차례 반복 측정에서 **optimized는 91~100%(3회 평균
+약 96%), naive는 69%**였다(`--limit 100`). 가장 뚜렷한 차이는
+`condition_new_atoms`(동 단위 지역, 경찰서 도보시간, 룸개수, 엘리베이터,
+반려동물 등 이번 세션에 추가한 조건 슬롯)로, naive는 이 슬롯 자체가
+`PLAN_JSON_SCHEMA`에 없어 구조적으로 0%, optimized는 100%다.
+
+측정 과정에서 실제 환각 하나를 발견했다: 답변 합성 LLM이 큰 만원 단위
+금액을 "억" 표기로 바꿔 말할 때 자릿수를 빠뜨리거나 10으로 나누는
+오류(예: `45988` → "4,598만원", `136923` → "13,692만원")가 재현성 있게
+나타났다. 프롬프트 지시만으로는(정확한 예시를 그대로 프롬프트에 박아도)
+고쳐지지 않았고, 코드가 억/만원 문자열을 미리 계산해 `_formatted` 필드로
+붙여주고 LLM은 그 문자열을 그대로 인용하게 바꾼 뒤에야 해소됐다(§4.7의
+근거 제한 합성 원칙을 숫자 단위 변환에도 적용한 사례). 같은 패턴이
+`qa_lease_compare`의 상담 결론(§14.9)에서도 재현되어, 결론 문장 자체를
+코드가 먼저 확정하는 방식으로 해결했다.
+
+이 벤치마크는 재현 가능한 오프라인 회귀시험(§20.6)과 달리 실제 유료 API
+호출과 LLM 표본 변동성을 포함하므로, 단일 실행 수치를 확정값으로 인용하지
+않는다.
 
 ---
 
@@ -2381,6 +2463,8 @@ KB HouseAgent의 핵심은 화려한 한 문장의 추천이 아니다. 자연�
 | `CURRENT_FRAUD_RISK_MODEL.md` | 운영 위험모형 설명 |
 | `AGENTIC_SYSTEM_ARCHITECTURE.md` | 에이전트 구조 |
 | `DATABASE_QUERY_CONDITION_GUIDE.md` | SQL 가능 조건 |
+| `DATASET_SOURCES_AND_USAGE.md` | 발표용 데이터셋 출처·활용 요약(§5 발췌) |
+| `reports/experiments/hallucination_*.json` | §20.7 환각 벤치마크 실행 결과(optimized/naive) |
 
 ---
 
@@ -2434,7 +2518,7 @@ KB HouseAgent의 핵심은 화려한 한 문장의 추천이 아니다. 자연�
 | GET | `/openapi/v3/maps.js` | Naver 지도 SDK proxy |
 | GET | `/api/map/sdk.js` | Naver 지도 SDK 호환 proxy |
 | POST | `/chat` | 조건 편집 대화 |
-| POST | `/api/advisor/chat` | 추천·상담 대화 |
+| POST | `/api/advisor/chat` | 상담 전용 대화(매물 직접 추천 없음, 지도 검색으로 안내) |
 | POST | `/fraud/score` | 단일 매물 보증사고 추정 |
 | GET | `/assets/youth-home-hero-v1.png` | 시작화면 이미지 |
 | GET | `/assets/youth-home-loader-sprite-v1.png` | 로딩 sprite |
@@ -2639,4 +2723,4 @@ SQLite DB에는 테스트 실행 감사로그가 추가되므로 파일 전체 h
 
 ## 인용·재현 고지
 
-이 문서를 인용할 때는 commit SHA, DB 스냅샷 날짜, 모델 메타데이터 버전을 함께 기록해야 한다. 금융상품·실거래·통계·API 가격과 정책은 시간에 따라 변경된다. 본 문서의 수치는 2026-07-30 저장소 스냅샷을 설명하며 현재 시장의 확정값으로 재사용하면 안 된다.
+이 문서를 인용할 때는 commit SHA, DB 스냅샷 날짜, 모델 메타데이터 버전을 함께 기록해야 한다. 금융상품·실거래·통계·API 가격과 정책은 시간에 따라 변경된다. §5의 DB 행 수·기간은 2026-07-30 저장소 스냅샷(DB 재생성 없음) 기준이고, §14.9·§20.6·§20.7의 코드 동작·회귀시험·벤치마크 수치는 commit `7946a0a`(2026-08-03) 기준이다. 어느 쪽도 현재 시장의 확정값으로 재사용하면 안 된다.
